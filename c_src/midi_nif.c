@@ -96,9 +96,9 @@ typedef struct _midi_dev_t {
 ErlNifFunc midi_funcs[] =
 {
     NIF_FUNC("open",        2, midi_open),
-    NIF_FUNC("close",       1, midi_close),
-    NIF_FUNC("write",       2, midi_write),
-    NIF_FUNC("read",        1, midi_read),
+    NIF_FUNC("close_",       1, midi_close),
+    NIF_FUNC("write_",       2, midi_write),
+    NIF_FUNC("read_",        1, midi_read),
 };
 
 DECL_ATOM(ok);

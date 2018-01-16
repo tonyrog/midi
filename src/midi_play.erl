@@ -6,18 +6,15 @@
 %%% Created :  4 Jan 2018 by Tony Rogvall <tony@rogvall.se>
 
 -module(midi_play).
--export([file/2]).
+-export([file/1, file/2]).
 
--export([chord/4]).
 -export([chordname_to_notes/1, chordname_to_notes/2]).
 -export([notename_to_note/1]).
--export([maj/4, maj7/4, add9/4, maj9/4, maj7b5/4]).
--export([min/4, min7/4, min_sharp7/4]).
--export([dim/4, dim7/4]).
 
 -export([note_to_frequency/1]).
 -export([frequency_to_note/1]).
 -export([octave/1, note_number/1]).
+-export([chord/1, chord/2, chord/4]).
 
 -define(USEC_PER_MINUTE, 60000000).
 -define(DEFAULT_MPQN,    500000).
@@ -30,13 +27,17 @@
 %% MidiTick = Number of ticks per microsecond = (MPQN/PPQN)
 %%
 
+file(File) ->
+    file(File, synth).
+
 file(File, Device) ->
     file(File, Device, ?USEC_PER_MINUTE / ?DEFAULT_MPQN, 0).
 
 file(File, Device, BPM, Bank) ->
     case midi_file:load(File) of
 	{ok,{1,_NumTracks,Division},Tracks} ->
-	    Fd = if is_list(Device) ->
+	    Fd = if Device =:= synth -> synth;
+		    is_list(Device) -> %% device name
 			 {ok,Fd1} = midi:open(Device,[raw,list]), Fd1;
 		    is_reference(Device) -> Device
 		 end,
@@ -66,14 +67,14 @@ file(File, Device, BPM, Bank) ->
 			    end,
 			?DEFAULT_MPQN / (FramesPerSec*TicksPerFrame)
 		end,
-	    io:format("wait MPQN=~w,PPQN=~w,BPM=~w,~w us/tick\n",
-		      [MPQN, PPQN, BPM, MidiTick]),
+	    %% io:format("wait MPQN=~w,PPQN=~w,BPM=~w,~w us/tick\n",
+	    %%    [MPQN, PPQN, BPM, MidiTick]),
 	    %% midi baud rate is 31250 => 1302 events / sec
 	    %% remove track id for now, not used
 	    Tracks1 = [T || {_TID,T} <- Tracks],
 	    play_(Fd,Tracks1,{MPQN,PPQN,BPM,MidiTick}),
-	    if File =/= Fd ->
-		    midi:close(Fd);
+	    if is_atom(Fd) -> ok;  %% do not close "standard" synth
+	       Device =/= Fd -> midi:close(Fd);
 	       true -> ok
 	    end,
 	    ok;
@@ -91,8 +92,8 @@ play_(Fd, Ts, TParam) ->
     play_(Fd,Ts1,TParam1).
 
 wait_ticks(Ticks, {_MPQN,_PPQN,_BPM,MidiTick}) ->
-    io:format("wait MPQN=~w,PPQN=~w,BPM=~w,~w us/tick\n",
-	      [_MPQN, _PPQN, _BPM, MidiTick]),
+    %% io:format("wait MPQN=~w,PPQN=~w,BPM=~w,~w us/tick\n",
+    %%  [_MPQN, _PPQN, _BPM, MidiTick]),
     WaitMs = trunc((Ticks * MidiTick) / 1000),
     receive
     after WaitMs ->
@@ -113,19 +114,25 @@ play_tracks(Fd,Es0=[D|Es],Ts,Acc,Wait,TParam) when is_integer(D) ->
 play_tracks(Fd,[{meta,Meta,Value}|Es],Ts,Acc,Wait,TParam) ->
     case Meta of
 	end_of_track ->
-	    io:format("end of track\n", []),
+	    %% io:format("end of track\n", []),
 	    next_track(Fd,Ts,Acc,Wait,TParam);
 	tempo ->
 	    {_,PPQN,_BPM,_MidiTick} = TParam,
 	    MPQN = Value,
 	    BPM  = ?USEC_PER_MINUTE / MPQN,
 	    MidiTick = MPQN / PPQN,
-	    io:format("set MPQN=~w,PPQN=~w,BPM=~w,~w us/tick\n",
-		      [MPQN, PPQN, BPM, MidiTick]),
+	    %% io:format("set MPQN=~w,PPQN=~w,BPM=~w,~w us/tick\n",
+	    %%   [MPQN, PPQN, BPM, MidiTick]),
 	    TParam1 = {MPQN,PPQN,BPM,MidiTick},
 	    play_tracks(Fd,Es,Ts,Acc,Wait,TParam1);
+	track_name ->
+	    io:format("~s\n", [Value]),
+	    play_tracks(Fd,Es,Ts,Acc,Wait,TParam);
+	text ->
+	    io:format("~s\n", [Value]),
+	    play_tracks(Fd,Es,Ts,Acc,Wait,TParam);
 	_ ->
-	    io:format("Meta ~p ~p\n", [Meta,Value]),
+	    %% io:format("Meta ~p ~p\n", [Meta,Value]),
 	    play_tracks(Fd,Es,Ts,Acc,Wait,TParam)
     end;
 play_tracks(Fd,[E|Es],Ts,Acc,Wait,TParam) ->
@@ -133,7 +140,7 @@ play_tracks(Fd,[E|Es],Ts,Acc,Wait,TParam) ->
     midi:write(Fd, Bytes),
     play_tracks(Fd,Es,Ts,Acc,Wait,TParam);
 play_tracks(Fd,[],Ts,Acc,Wait,TParam) ->
-    io:format("track reached end not meta\n", []),
+    %% io:format("track reached end not meta\n", []),
     next_track(Fd,Ts,Acc,Wait,TParam).
 
 next_track(_Fd,[],Acc,Wait,TParam) -> %% one complete round
@@ -141,42 +148,21 @@ next_track(_Fd,[],Acc,Wait,TParam) -> %% one complete round
 next_track(Fd,[T|Ts],Acc,Wait,TParam) -> 
     play_tracks(Fd,T,Ts,Acc,Wait,TParam).
 
-%% Util to play various chords
-chord(Synth, Chan, Notes, Len) ->
+%% Util to play various chords (testing)
+chord(ChordName) ->
+    chord(ChordName,1000).
+
+chord(ChordName,Len) ->
+    chord(synth,0,ChordName,Len).
+
+chord(Synth,Chan,ChordName,Len) ->
+    chord_(Synth,Chan,chordname_to_notes(ChordName),Len).
+
+chord_(Synth,Chan,Notes,Len) ->
     lists:foreach(fun(Note) -> midi:note_on(Synth,Chan,Note,100) end, Notes),
     timer:sleep(Len),
     lists:foreach(fun(Note) -> midi:note_off(Synth,Chan,Note,100) end, Notes),
     ok.
-
-maj(Synth, Chan, R, Len) -> %% X | Xmaj
-    chord(Synth, Chan, [R,R+4,R+7],Len).
-
-add9(Synth, Chan, R, Len) -> %% Xadd9
-    chord(Synth, Chan, [R,R+4,R+7,R+14],Len).
-
-maj7b5(Synth, Chan, R, Len) -> %% X7b5
-    chord(Synth, Chan, [R,R+4,R+6,R+10],Len).
-
-maj7(Synth, Chan, R, Len) -> %% Xmaj7
-    chord(Synth, Chan, [R,R+4,R+7,R+11],Len).
-
-maj9(Synth, Chan, R, Len) -> %% Xmaj9
-    chord(Synth, Chan, [R,R+4,R+7,R+11,R+14],Len).
-
-min(Synth, Chan, R, Len) -> %% Xm|Xmin
-    chord(Synth, Chan, [R,R+3,R+7],Len).
-
-min7(Synth, Chan, R, Len) -> %% Xm7
-    chord(Synth, Chan, [R,R+3,R+7,R+10],Len).
-
-min_sharp7(Synth, Chan, R, Len) -> %% Xm#7
-    chord(Synth, Chan, [R,R+3,R+7,R+11],Len).
-
-dim(Synth, Chan, R, Len) -> %% Xdim
-    chord(Synth, Chan, [R,R+3,R+6],Len).
-
-dim7(Synth, Chan, R, Len) -> %% Xdim7
-    chord(Synth, Chan, [R,R+3,R+6,R+9],Len).
 
 %% translate note name to note value
 notename_to_note([$~|Cs]) -> notename_to_note(Cs);

@@ -209,6 +209,8 @@ event_encode({meta,text,Text}) ->
     meta_encode(?MIDI_META_TEXT,Text);
 event_encode({meta,copyright,Text}) ->
     meta_encode(?MIDI_META_COPYRIGHT,Text);
+event_encode({meta,track_name,Text}) ->
+    meta_encode(?MIDI_META_TRACKNAME,Text);
 event_encode({meta,instrument,Text}) ->
     meta_encode(?MIDI_META_INSTRUMENT,Text);
 event_encode({meta,lyric,Text}) ->
