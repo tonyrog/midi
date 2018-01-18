@@ -131,11 +131,11 @@ play_notes(Fd,Ns,Ctx,Sig,SP,RP) ->
     case get_note(Ns,Sig) of
 	false ->
 	    play_notes_(Fd,Ns,Ctx,Sig,SP,RP);
-	{E={c,Notes},Ns1,Sig1} ->
-	    play_chord(Fd,Notes,100,Ctx),
+	{E={c,Notes,As},Ns1,Sig1} ->
+	    play_chord(Fd,Notes,As,100,Ctx),
 	    play_notes(Fd,Ns1,Ctx,Sig1,[E|SP],RP);
-	{E={g,Notes,Bass},Ns1,Sig1} ->
-	    play_guitar(Fd,Notes,Bass,100,Ctx),
+	{E={g,Notes,Bass,As},Ns1,Sig1} ->
+	    play_guitar(Fd,Notes,As,Bass,100,Ctx),
 	    play_notes(Fd,Ns1,Ctx,Sig1,[E|SP],RP);
 	{E={n,Note,Len,As},Ns1,Sig1} ->
 	    play_note(Fd,Note,As,100,Ctx,Len),
@@ -202,8 +202,8 @@ pop_notes(Ns, I, [E|SP1]) ->
 get_note(Ns, Sig) ->
     case get_note_(Ns,Sig,[]) of
 	false -> false;
-	{E={c,_Notes},Ns1,Sig1} -> {E,Ns1,Sig1};
-	{E={g,_Notes,_Bass},Ns1,Sig1} -> {E,Ns1,Sig1};
+	{E={c,_Notes,_As},Ns1,Sig1} -> {E,Ns1,Sig1};
+	{E={g,_Notes,_Bass,_As},Ns1,Sig1} -> {E,Ns1,Sig1};
 	{E={n,Note1,Len1,As1},Ns1,Sig1} ->
 	    case get_dots(Ns1) of
 		false ->
@@ -219,8 +219,8 @@ get_note(Ns, Sig) ->
     end.
 
 get_note_([E={n,_Note,_Len,_As}|Ns],Sig,_) -> {E,Ns,Sig};
-get_note_([E={c,_Notes}|Ns],Sig,_) -> {E,Ns,Sig};
-get_note_([E={g,_Notes,_Bass}|Ns],Sig,_) -> {E,Ns,Sig};
+get_note_([E={c,_Notes,_As}|Ns],Sig,_) -> {E,Ns,Sig};
+get_note_([E={g,_Notes,_Bass,_As}|Ns],Sig,_) -> {E,Ns,Sig};
 
 %% sharpen should apply to the next bar ( unless a tie is used )
 get_note_([sharpen,{note,Note,Len}|Ns],Sig,As) ->
@@ -233,6 +233,9 @@ get_note_([flatten,{note,Note,Len}|Ns],Sig,As) ->
     %% signature does not apply
     {Note1,Ns1,As1} = get_suffix(Ns,Note,[Note,flatten|As]),
     {{n,Note1-1,Len,As1}, Ns1, [{Note1,Note1-1}|Sig]};
+
+get_note_([staccato|Ns],Sig,As) ->
+    get_note_(Ns,Sig,[staccato|As]);
 
 get_note_([naturalise,{note,Note,Len}|Ns],Sig,As) ->
     %% signature does not apply
@@ -247,10 +250,11 @@ get_note_([{rest,Len}|Ns],Sig,As) ->
     {{n,rest,Len,[rest|As]},Ns,Sig};
 get_note_([{space,Len}|Ns],Sig,As) ->
     {{n,rest,Len},Ns,[space|As],Sig};
-get_note_([{chord,Notes}|Ns],Sig,_As) ->
-    {{c,get_chord(Notes,Sig)},Ns,Sig};
-get_note_([{guitar,Note,Accidental,Type,Bass}|Ns],Sig,_As) ->
-    {get_guitar_chord(Note,Accidental,Type,Bass,Sig),Ns,Sig};
+get_note_([{chord,Notes}|Ns],Sig,As) ->
+    {{c,get_chord(Notes,Sig),As},Ns,Sig};
+get_note_([{guitar,Note,Accidental,Type,Bass}|Ns],Sig,As) ->
+    {g,Ns1,Bs} = get_guitar_chord(Note,Accidental,Type,Bass,Sig),
+    {{g,Ns1,Bs,As},Ns,Sig};
 get_note_(_,_Sig,_As) ->
     false.
 
@@ -268,7 +272,6 @@ get_chord(Ns, Sig) ->
 	{{n,Note1,Len1,_As},Ns1,Sig1} ->
 	    [{Note1,Len1}|get_chord(Ns1,Sig1)]
     end.
-
 
 drop_note_sig([{_,_}|Sig]) -> drop_note_sig(Sig);
 drop_note_sig(Sig) when is_map(Sig) -> Sig.
@@ -322,24 +325,51 @@ play_note(_Fd,rest,_As,_Velocity,#{tempo := Tempo},{D,E}) ->
 play_note(Fd,Note,As,Velocity,#{tempo := Tempo, channel:=Chan},{D,E}) ->
     io:format("play note ~w [~s] length=~w/~w\n", [Note,fmt_note(As),D,E]),
     NoteLen = trunc(((60*1000)/Tempo)*(D/E)),
-    midi:note_on(Fd,Chan,Note,Velocity),
-    timer:sleep(NoteLen),
-    midi:note_off(Fd,Chan,Note,Velocity).
+    case lists:member(staccato,As) of
+	true ->
+	    OnLen = trunc(NoteLen/4),
+	    midi:note_on(Fd,Chan,Note,Velocity),
+	    timer:sleep(OnLen),
+	    midi:note_off(Fd,Chan,Note,Velocity),
+	    timer:sleep(NoteLen - OnLen);
+	false ->
+	    midi:note_on(Fd,Chan,Note,Velocity),
+	    timer:sleep(NoteLen),
+	    midi:note_off(Fd,Chan,Note,Velocity)
+    end.
 
 %% Tempo is number of default note lengths per minute
-play_chord(Fd,Ns,Velocity,#{tempo := Tempo, channel:=Chan}) ->
+play_chord(Fd,Ns,As,Velocity,#{tempo := Tempo, channel:=Chan}) ->
     Notes = [N || {N,_} <- Ns],
     %% fixme: now we find max length, but we should check instead
     Lens = [{A/B,{A,B}} || {_,{A,B}} <- Ns],
     {_,{D,E}} = lists:max(Lens),
     %% io:format("play note ~w length=~w/~w\n", [Note,D,E]),
     NoteLen = trunc(((60*1000)/Tempo)*(D/E)),
-    lists:foreach(fun(Note) -> midi:note_on(Fd,Chan,Note,Velocity) end, Notes),
-    timer:sleep(NoteLen),
-    lists:foreach(fun(Note) -> midi:note_off(Fd,Chan,Note,Velocity) end, Notes).
+    case lists:member(staccato,As) of
+	true ->
+	    OnLen = trunc(NoteLen/4),
+	    lists:foreach(fun(Note) -> 
+				  midi:note_on(Fd,Chan,Note,Velocity) end, 
+			  Notes),
+	    timer:sleep(OnLen),
+	    lists:foreach(fun(Note) -> 
+				  midi:note_off(Fd,Chan,Note,Velocity) end, 
+			  Notes),
+	    timer:sleep(NoteLen - OnLen);
+	false ->
+	    lists:foreach(fun(Note) -> 
+				  midi:note_on(Fd,Chan,Note,Velocity) end, 
+			  Notes),
+	    timer:sleep(NoteLen),
+	    lists:foreach(fun(Note) -> 
+				  midi:note_off(Fd,Chan,Note,Velocity) end, 
+			  Notes)
+    end.
+	    
 
 %% fixme: what channel to play guitar chords / bass on?
-play_guitar(Fd,Ns0,Bs,Velocity,_Ctx) ->
+play_guitar(Fd,Ns0,_As,Bs,Velocity,_Ctx) ->
     stop_guitar(Fd), %% stop old chord
     Ns = [N || {N,_}<-Ns0],
     %% fixme: now we find max length, but we should check instead
@@ -347,7 +377,7 @@ play_guitar(Fd,Ns0,Bs,Velocity,_Ctx) ->
     %% {_,{D,E}} = lists:max(Lens),
     %% io:format("play note ~w length=~w/~w\n", [Note,D,E]),
     %% NoteLen = trunc(((60*1000)/Tempo)*(D/E)),
-    io:format("Ns = ~w, Bs = ~w\n", [Ns, Bs]),
+    %% io:format("Ns = ~w, Bs = ~w\n", [Ns, Bs]),
     lists:foreach(fun(N) -> midi:note_on(Fd,2,N-24,Velocity) end, Bs),
     lists:foreach(fun(N) -> midi:note_on(Fd,1,N-24,Velocity) end, Ns),
     put(g, {Ns,Bs}).
@@ -365,6 +395,7 @@ fmt_note(As) ->
     fmt_note(As,[]).
 
 fmt_note([],Acc) -> Acc;
+fmt_note([staccato|As],Acc) -> fmt_note(As,[$.|Acc]);
 fmt_note([sharpen|As],Acc) -> fmt_note(As,[$^|Acc]);
 fmt_note([flatten|As],Acc) -> fmt_note(As,[$_|Acc]);
 fmt_note([naturalise|As],Acc) -> fmt_note(As,[$=|Acc]);
