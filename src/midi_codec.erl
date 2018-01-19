@@ -14,6 +14,7 @@
 -export([meta_decode/1, meta_encode/2]).
 -export([length_decode/1, length_encode/1]).
 -export([note_decode/1, note_encode/1]).
+-export([gm_midi_map/0, gm_drum_map/0]).
 
 -include("midi.hrl").
 
@@ -30,14 +31,18 @@ scan({State,Cs,Status,Running,Params}) ->
 scan(Chars, {State,Cs,Status,Running,Params}) ->
     parse(State,Cs++Chars,Status,Running,Params).
 
-parse(status, Cs=[C|_], _Status, Running, _Params) when C band 16#80 =:= 0 ->
+parse(status, Cs=[C|_], _Status, Running, _Params) 
+  when C band 16#80 =:= 0 -> %% mark as running event?
     parse(params, Cs, Running, Running, []);
-parse(status, [C|Cs], Status, Running, _Params) ->
+parse(status, [Status|Cs], _Status, Running, _Params) ->
     if Status band 16#f0 =:= 16#f0 ->
-	    if Status =< 16#f7 -> parse(params,Cs,C,0,[]);
-	       true -> parse(params,Cs,C,Running,[])
+	    if Status =< 16#f7 -> 
+		    parse(params,Cs,Status,0,[]);
+	       true ->
+		    parse(params,Cs,Status,Running,[])
 	    end;
-       true -> parse(params,Cs,C,C,[])
+       true -> 
+	    parse(params,Cs,Status,Status,[])
     end;
 parse(status, [], Status, Running, Params) ->
     {eot, {status,[],Status,Running,Params}};

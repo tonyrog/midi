@@ -1,7 +1,7 @@
 %% @author Tony Rogvall <tony@rogvall.se>
 %%% @copyright (C) 2018, Tony Rogvall
 %%% @doc
-%%%    ABC format player
+%%%    ABC format parser/player
 %%% @end
 %%% Created :  7 Jan 2018 by Tony Rogvall <tony@rogvall.se>
 
@@ -20,32 +20,7 @@
 
 -define(is_digit(C),   (((C) >= $0) andalso ((C) =< $9))).
 
-%% Play ABC notation
-%% 
-%% LENGTH:
-%%   unit_note_length is the default length of a note L: A/B
-%% 
-%%   dotted notes i.e D>E 
-%%   D is lengthened by with half note length and E is shortened by half note 
-%%   if default note length is 1/8 then, D is 3/16 and E is 1/16
-%%   the D<E is the way around D is 1/16 and E is 3/16,
-%%
-%% PITCH
-%%   ^ sharpen - add 1 to the note ( prefix )
-%%   _ flatten - subtract 1 from the note ( prefix )
-%%   ? naturalise - temporarliy? clear the note map
-%%   ' tick   - up one octave  ( suffix )
-%%   , comma  - down one octave ( suffix )
-%%
-%%   Scale in G major: GABcde^fg
-%%   Scale in G minor: GA_Bcd_efg
-%%
-%% use the signature field K to modify the note values
-%%   Scale in G major using signtaure [K:G] GABcdefg
-%%   and Scale in G minor using signature [K:Gmin] GABcdefg
-%%   
-%%   
-%% 
+
 play_file(File) ->
     play(synth, File).
 
@@ -330,12 +305,12 @@ play_note(Fd,Note,As,Velocity,#{tempo := Tempo, channel:=Chan},{D,E}) ->
 	    OnLen = trunc(NoteLen/4),
 	    midi:note_on(Fd,Chan,Note,Velocity),
 	    timer:sleep(OnLen),
-	    midi:note_off(Fd,Chan,Note,Velocity),
+	    midi:note_off(Fd,Chan,Note),
 	    timer:sleep(NoteLen - OnLen);
 	false ->
 	    midi:note_on(Fd,Chan,Note,Velocity),
 	    timer:sleep(NoteLen),
-	    midi:note_off(Fd,Chan,Note,Velocity)
+	    midi:note_off(Fd,Chan,Note)
     end.
 
 %% Tempo is number of default note lengths per minute
@@ -354,7 +329,7 @@ play_chord(Fd,Ns,As,Velocity,#{tempo := Tempo, channel:=Chan}) ->
 			  Notes),
 	    timer:sleep(OnLen),
 	    lists:foreach(fun(Note) -> 
-				  midi:note_off(Fd,Chan,Note,Velocity) end, 
+				  midi:note_off(Fd,Chan,Note) end, 
 			  Notes),
 	    timer:sleep(NoteLen - OnLen);
 	false ->
@@ -363,7 +338,7 @@ play_chord(Fd,Ns,As,Velocity,#{tempo := Tempo, channel:=Chan}) ->
 			  Notes),
 	    timer:sleep(NoteLen),
 	    lists:foreach(fun(Note) -> 
-				  midi:note_off(Fd,Chan,Note,Velocity) end, 
+				  midi:note_off(Fd,Chan,Note) end, 
 			  Notes)
     end.
 	    
@@ -386,8 +361,8 @@ stop_guitar(Fd) ->
     case get(g) of
 	undefined -> ok;
 	{Ns,Bs} ->
-	    lists:foreach(fun(N) -> midi:note_off(Fd,1,N-24,50) end, Ns),
-	    lists:foreach(fun(N) -> midi:note_off(Fd,2,N-24,50) end, Bs),
+	    lists:foreach(fun(N) -> midi:note_off(Fd,1,N-24) end, Ns),
+	    lists:foreach(fun(N) -> midi:note_off(Fd,2,N-24) end, Bs),
 	    erase(g)
     end.
 
@@ -664,7 +639,7 @@ parse_b(Cs,Acc) ->
 	[$^|Cs1]    -> parse_b(Cs1,[sharpen|Acc]);     %% prefix
 	[$=|Cs1]    -> parse_b(Cs1,[naturalise|Acc]);  %% prefix
 	[$_|Cs1]    -> parse_b(Cs1,[flatten|Acc]);     %% prefix
-	[$u|Cs1]    -> parse_b(Cs1,[up_bow|Acc]);     %% suffix
+	[$u|Cs1]    -> parse_b(Cs1,[up_bow|Acc]);      %% suffix
 	[$v|Cs1]    -> parse_b(Cs1,[down_bow|Acc]);    %% suffix
 	[$.|Cs1]    -> parse_b(Cs1,[staccato|Acc]);    %% prefix
 	[$-|Cs1]    -> parse_b(Cs1,[tie|Acc]);         %% binary
@@ -870,7 +845,6 @@ parse_guitar_bass([$/|Bass],Type,Note,Accidental,Cs,Acc) ->
 parse_guitar_bass([],Type,Note,Accidental,Cs,Acc) ->
     parse_b(Cs, [{guitar,Note,Accidental,Type,[]}|Acc]).
 
-
 parse_index(Cs,Acc) ->
     {Line,Cs1} = get_line(Cs),
     Value = list_to_integer(string:trim(Line)),
@@ -971,7 +945,6 @@ parse_key(Cs,Acc) ->
 	    {Cs1,[{key,[C|"#min"],to_modal(Modal)}|Acc]};
 	[C,$m,$i,$n|Modal] when C >= $A, C =< $G ->
 	    {Cs1,[{key,[C|"min"],to_modal(Modal)}|Acc]};
-
 
 	[C,$b,$m,$i,$x|Modal] when C >= $A, C =< $G ->
 	    {Cs1,[{key,[C|"bmix"],to_modal(Modal)}|Acc]};

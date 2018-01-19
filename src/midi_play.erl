@@ -14,18 +14,27 @@
 -export([note_to_frequency/1]).
 -export([frequency_to_note/1]).
 -export([octave/1, note_number/1]).
--export([chord/1, chord/2, chord/4]).
+-export([chord/1, chord/2]).
+-export([chord_1st/1, chord_1st/2]).
+-export([chord_2nd/1, chord_2nd/2]).
+-export([chord/4]).
 
 -define(USEC_PER_MINUTE, 60000000).
 -define(DEFAULT_MPQN,    500000).
 
 -include("midi.hrl").
-%%
-%% PPQN = pulses per quarter note
-%% MPQN = micro seconds per quarter beat
-%% BPM  = beats per minute, = (USEC_PER_MINUTE/MPQN)
-%% MidiTick = Number of ticks per microsecond = (MPQN/PPQN)
-%%
+
+-define(format_record(T,R), format_record((R), record_info(fields,T))).
+	
+%% time parameters
+
+-record(tparam,
+	{
+	  ppqn = 0.0 :: float(),  %% pulses per quarter note
+	  mpqn = 0   :: number(), %% micro seconds per quarter beat
+	  bpm  = 0.0 :: float(),  %% beats per minute (USEC_PER_MINUTE/MPQN)
+	  tick = 1.0 :: float() %% Number of ticks per microsecond = (MPQN/PPQN)
+	}).
 
 file(File) ->
     file(File, synth).
@@ -45,7 +54,7 @@ file(File, Device, BPM, Bank) ->
 	    if Bank > 0 ->
 		    lists:foreach(
 		      fun(I) ->
-			      midi:bank_msb(Fd, I, Bank)
+			      midi:bank(Fd, I, Bank)
 		      end, lists:seq(0, 15));
 	       true ->
 		    ok
@@ -61,18 +70,17 @@ file(File, Device, BPM, Bank) ->
 			    case Division bsr 8 of
 				-24 -> 24.0;
 				-25 -> 25.0;
-				-29 -> 39.97;
-				-30 -> 30.0;
-				_ -> 0.0
+				-29 -> 29.97;
+				-30 -> 30.0
 			    end,
 			?DEFAULT_MPQN / (FramesPerSec*TicksPerFrame)
 		end,
-	    %% io:format("wait MPQN=~w,PPQN=~w,BPM=~w,~w us/tick\n",
-	    %%    [MPQN, PPQN, BPM, MidiTick]),
+	    TParam = #tparam{mpqn=MPQN,ppqn=PPQN,bpm=BPM,tick=MidiTick},
+	    %% io:format("tparam = ~s\n", [?format_record(tparam,TParam)]),
 	    %% midi baud rate is 31250 => 1302 events / sec
 	    %% remove track id for now, not used
 	    Tracks1 = [T || {_TID,T} <- Tracks],
-	    play_(Fd,Tracks1,{MPQN,PPQN,BPM,MidiTick}),
+	    run(Fd,Tracks1,TParam),
 	    if is_atom(Fd) -> ok;  %% do not close "standard" synth
 	       Device =/= Fd -> midi:close(Fd);
 	       true -> ok
@@ -82,71 +90,105 @@ file(File, Device, BPM, Bank) ->
 	    Error
     end.
 
-%% fixme: tempo!
-play_(_Fd, [], _TParam) ->
-    ok;
-play_(Fd, Ts, TParam) ->
-    {Wait,Acc,TParam1} = next_track(Fd,Ts,[],1000000000,TParam),
-    wait_ticks(Wait,TParam1),
-    Ts1 = delta(Acc,[],Wait),
-    play_(Fd,Ts1,TParam1).
 
-wait_ticks(Ticks, {_MPQN,_PPQN,_BPM,MidiTick}) ->
-    %% io:format("wait MPQN=~w,PPQN=~w,BPM=~w,~w us/tick\n",
-    %%  [_MPQN, _PPQN, _BPM, MidiTick]),
-    WaitMs = trunc((Ticks * MidiTick) / 1000),
-    receive
-    after WaitMs ->
-	    ok
+run(Fd,Trs,TParam) ->
+    StartMidiTick = 0,  %% delay?
+    {Trs1,Ts1} = init(Trs,[],[],StartMidiTick),
+    run_(Fd,Trs1,Ts1,StartMidiTick,time_us(),TParam).
+
+run_(Fd,Trs,Ts,StartMidiTick,StartTimeUs,TParam) ->
+    CurMidiTick = lists:min(Ts),
+    NumMidiTicks = CurMidiTick - StartMidiTick,
+    WaitUs = trunc(NumMidiTicks*TParam#tparam.tick),
+    wait_until(StartTimeUs + WaitUs),
+    case next(Fd,Trs,Ts,[],[],CurMidiTick,TParam) of
+	{[],[],_TParam1} ->
+	    ok;
+	{Trs1,Ts1,TParam1} when TParam =/= TParam1 -> %% tempo change
+	    %% recalculate the tick in Ts1? or reset?
+	    run_(Fd,Trs1,Ts1,CurMidiTick,time_us(),TParam1);
+	{Trs1,Ts1,TParam1} ->
+	    run_(Fd,Trs1,Ts1,StartMidiTick,StartTimeUs,TParam1)
     end.
 
-delta([[D|Es]|Ts], Acc, Wait) when is_integer(D) ->
-    delta(Ts, [[D-Wait|Es]|Acc], Wait);
-delta([], Acc, _Wait) ->
-    Acc.
+%% load initial delta time from 0
+init([[D|Es] | Trs], Trs1, Ts, Ticks) when is_integer(D) ->
+    init(Trs, [Es|Trs1], [D+Ticks|Ts], Ticks);
+init([], Trs, Ts, _Ticks) -> 
+    {Trs, Ts}.
 
-play_tracks(Fd,Es0=[D|Es],Ts,Acc,Wait,TParam) when is_integer(D) ->
-    if D =< 0 ->
-	    play_tracks(Fd,Es,Ts,Acc,Wait,TParam);
-       true ->
-	    next_track(Fd,Ts,[Es0|Acc],erlang:min(D,Wait),TParam)
+next(Fd,[[E|Es]|Trs],[T|Ts],Trs1,Ts1,Tick,TParam) when T =< Tick ->
+    case exec(Fd,E,TParam) of
+	{end_of_track,TParam1} ->
+	    next(Fd,Trs,Ts,Trs1,Ts1,Tick,TParam1);
+	{true,TParam1} ->
+	    case Es of
+		[D|Es1] ->
+		    next(Fd,[Es1|Trs],[T+D|Ts],Trs1,Ts1,Tick,TParam1);
+		[] ->
+		    %% warn end of track not signaled ...
+		    next(Fd,Trs,Ts,Trs1,Ts1,Tick,TParam1)
+	    end
     end;
-play_tracks(Fd,[{meta,Meta,Value}|Es],Ts,Acc,Wait,TParam) ->
+next(Fd,[Es|Trs],[T|Ts],Trs1,Ts1,Tick,TParam) ->
+    next(Fd,Trs,Ts,[Es|Trs1],[T|Ts1],Tick,TParam);
+next(_Fd,[],[],Trs1,Ts1,_Tick,TParam) -> 
+    {Trs1,Ts1,TParam}.
+
+exec(_Fd,{meta,Meta,Value},TParam) ->
     case Meta of
 	end_of_track ->
 	    %% io:format("end of track\n", []),
-	    next_track(Fd,Ts,Acc,Wait,TParam);
+	    {end_of_track,TParam};
 	tempo ->
-	    {_,PPQN,_BPM,_MidiTick} = TParam,
+	    PPQN = TParam#tparam.ppqn,
 	    MPQN = Value,
 	    BPM  = ?USEC_PER_MINUTE / MPQN,
 	    MidiTick = MPQN / PPQN,
-	    %% io:format("set MPQN=~w,PPQN=~w,BPM=~w,~w us/tick\n",
-	    %%   [MPQN, PPQN, BPM, MidiTick]),
-	    TParam1 = {MPQN,PPQN,BPM,MidiTick},
-	    play_tracks(Fd,Es,Ts,Acc,Wait,TParam1);
+	    TParam1 = TParam#tparam{mpqn=MPQN,bpm=BPM,tick=MidiTick},
+	    %% io:format("tparam = ~s\n", [?format_record(tparam,TParam1)]),
+	    {true,TParam1};
 	track_name ->
 	    io:format("~s\n", [Value]),
-	    play_tracks(Fd,Es,Ts,Acc,Wait,TParam);
+	    {true,TParam};
 	text ->
 	    io:format("~s\n", [Value]),
-	    play_tracks(Fd,Es,Ts,Acc,Wait,TParam);
+	    {true,TParam};
 	_ ->
 	    %% io:format("Meta ~p ~p\n", [Meta,Value]),
-	    play_tracks(Fd,Es,Ts,Acc,Wait,TParam)
-    end;
-play_tracks(Fd,[E|Es],Ts,Acc,Wait,TParam) ->
+	    {true,TParam}
+    end;    
+exec(Fd, E, TParam) ->
     Bytes = midi_codec:event_encode(E),
     midi:write(Fd, Bytes),
-    play_tracks(Fd,Es,Ts,Acc,Wait,TParam);
-play_tracks(Fd,[],Ts,Acc,Wait,TParam) ->
-    %% io:format("track reached end not meta\n", []),
-    next_track(Fd,Ts,Acc,Wait,TParam).
+    {true,TParam}.
 
-next_track(_Fd,[],Acc,Wait,TParam) -> %% one complete round
-    {Wait,Acc,TParam};
-next_track(Fd,[T|Ts],Acc,Wait,TParam) -> 
-    play_tracks(Fd,T,Ts,Acc,Wait,TParam).
+time_us() ->
+    erlang:monotonic_time(micro_seconds).
+
+wait_until(End) ->
+    Now = time_us(),
+    if Now < End ->
+	    Delta = End - Now,
+	    if Delta > 2000 -> %% 2ms
+		    timer:sleep(Delta div 1000),
+		    wait_until(End);
+	       true ->
+		    spin_until(End)
+	    end;
+       true ->
+	    Now
+    end.
+
+%% faster spin, only use yield to be polite
+spin_until(End) ->
+    Now = time_us(),
+    if Now < End -> 
+	    erlang:yield(),
+	    spin_until(End);
+       true ->
+	    Now
+    end.
 
 %% Util to play various chords (testing)
 chord(ChordName) ->
@@ -158,10 +200,28 @@ chord(ChordName,Len) ->
 chord(Synth,Chan,ChordName,Len) ->
     chord_(Synth,Chan,chordname_to_notes(ChordName),Len).
 
+chord_1st(ChordName) ->
+    chord_1st(ChordName,1000).
+
+chord_1st(ChordName,Len) ->
+    chord_1st(synth,0,ChordName,Len).
+
+chord_1st(Synth,Chan,ChordName,Len) ->
+    chord_(Synth,Chan,first_inversion(chordname_to_notes(ChordName)),Len).
+
+chord_2nd(ChordName) ->
+    chord_2nd(ChordName,1000).
+
+chord_2nd(ChordName,Len) ->
+    chord_2nd(synth,0,ChordName,Len).
+
+chord_2nd(Synth,Chan,ChordName,Len) ->
+    chord_(Synth,Chan,second_inversion(chordname_to_notes(ChordName)),Len).
+
 chord_(Synth,Chan,Notes,Len) ->
     lists:foreach(fun(Note) -> midi:note_on(Synth,Chan,Note,100) end, Notes),
     timer:sleep(Len),
-    lists:foreach(fun(Note) -> midi:note_off(Synth,Chan,Note,100) end, Notes),
+    lists:foreach(fun(Note) -> midi:note_off(Synth,Chan,Note) end, Notes),
     ok.
 
 %% translate note name to note value
@@ -203,6 +263,10 @@ chordname_to_notes(R,[$m|Cs]) when Cs =:= []; hd(Cs) =/= $i ->
 chordname_to_notes(R,"dim")    -> [R,R+3,R+6];
 chordname_to_notes(R,"dim7")   -> [R,R+3,R+6,R+9].
 
+first_inversion([R,A,B|Ns]) -> [R,A-12,B-12|Ns].
+
+second_inversion([R,A,B|Ns]) -> [R,A,B-12|Ns].
+
 %% F = 440*2^((N-69)/12)
 %% N = 12*(log2(F)-log2(440))+69
 %%
@@ -217,3 +281,17 @@ octave(Note) -> Note div 12.
 
 %% note number with in octave
 note_number(Note) -> Note rem 12.
+
+
+format_record(R, Fs) ->
+    ["#",atom_to_list(element(1,R)),"{",
+     fmt_fld(R, 2, hd(Fs)), fmt_flds(R,3,tl(Fs)),"}"].
+
+fmt_flds(_R, _I, []) -> [];
+fmt_flds(R, I, [F|Fs]) -> [",",fmt_fld(R,I,F),fmt_flds(R,I+1,Fs)].
+
+fmt_fld(R, I, F) ->
+    [atom_to_list(F),"=",io_lib:format("~p",[element(I,R)])].
+     
+    
+    

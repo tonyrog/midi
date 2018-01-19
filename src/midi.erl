@@ -9,9 +9,13 @@
 
 -on_load(init/0).
 -export([close/1, read/1, write/2]).
--export([note_on/4, note_off/4, control/4,
-	 volume/3, all_off/2, reset_all/2,
-	 bank_msb/3, program_change/3]).
+-export([note_on/4, note_off/4, note_off/3, 
+	 control/4, volume/3, all_off/2, reset_all/2,
+	 bank/3, program_change/3]).
+-export([control_fine/4,
+	 volume_fine/3,
+	 bank_fine/3]).
+
 -export([start/0, stop/0]).
 -export([setup_synth/0, open_synth/0]).
 -export([devices/0]).
@@ -73,14 +77,25 @@ read_(_Fd) ->
 note_on(Synth, Chan, Note, Velocity) ->
     write(Synth, <<?MIDI_NOTE_ON(Chan), Note, Velocity>>).
 
+%% note! using ?MIDI_NOTE_ON(Chan), Note, 0>> 
+%% may save a byte in the running status when stopping a chord
+note_off(Synth, Chan, Note) ->
+    write(Synth, <<?MIDI_NOTE_ON(Chan), Note, 0>>).
 note_off(Synth, Chan, Note, Velocity) ->
     write(Synth, <<?MIDI_NOTE_OFF(Chan), Note, Velocity>>).
 
 control(Synth, Chan, Control, Arg) ->
     write(Synth, <<?MIDI_CONTROL_CHANGE(Chan), Control, Arg>>).
 
+control_fine(Synth, Chan, Control, Arg) ->
+    write(Synth, <<?MIDI_CONTROL_CHANGE(Chan), Control, (Arg bsr 8)>>),
+    write(Synth, <<?MIDI_CONTROL_CHANGE(Chan), (Control+1), Arg>>).
+
 volume(Synth, Chan, Volume) ->
     control(Synth, Chan, ?MIDI_CTRL_VOLUME, Volume).
+
+volume_fine(Synth, Chan, Volume) ->
+    control_fine(Synth, Chan, ?MIDI_CTRL_VOLUME, Volume).
 
 all_off(Synth, Chan) ->
     control(Synth, Chan, ?MIDI_CTRL_ALL_NOTES_OFF, 0).
@@ -88,8 +103,11 @@ all_off(Synth, Chan) ->
 reset_all(Synth, Chan) ->
     control(Synth, Chan, ?MIDI_CTRL_ALL_CONTROLLERS_OFF, 0).
 
-bank_msb(Synth, Chan, Bank) ->
+bank(Synth, Chan, Bank) ->
     control(Synth, Chan, ?MIDI_CTRL_BANK_SELECT, Bank).
+
+bank_fine(Synth, Chan, Bank) ->
+    control_fine(Synth, Chan, ?MIDI_CTRL_BANK_SELECT, Bank).
 
 program_change(Synth, Chan, Prog) ->
     write(Synth, <<?MIDI_PROGRAM_CHANGE(Chan), Prog>>).
@@ -101,7 +119,7 @@ io_prog(DeviceName) ->
 	       end).
 
 input_prog(DeviceName, CallBack) ->
-    case open(DeviceName,[event,list]) of
+    case open(DeviceName,[event,list,running]) of
 	{ok,Fd} ->
 	    input_loop(Fd, CallBack, midi_codec:init([]));
 	Error ->
@@ -145,7 +163,7 @@ devices() ->
 
 open_synth() ->
     case setup_synth() of
-	{ok,#{ device:=Device} } -> open(Device, []);
+	{ok,#{ device:=Device} } -> open(Device, [running]);
 	Error -> Error
     end.
 

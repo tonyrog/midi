@@ -86,10 +86,12 @@ typedef struct _midi_dev_t {
     uint8_t params[MAX_MIDI_BUF];
     int     pos;
     int     len;
-    int     status;
-    int     running;
+    int     status_in;
+    int     running_in;
+    int     status_out;    
     int     raw_mode;
     int     bin_mode;
+    int     running_mode;
 } midi_dev_t;
 
 
@@ -105,10 +107,7 @@ DECL_ATOM(ok);
 DECL_ATOM(error);
 DECL_ATOM(undefined);
 DECL_ATOM(select);
-DECL_ATOM(raw);
-DECL_ATOM(event);
-DECL_ATOM(binary);
-DECL_ATOM(list);
+// events
 DECL_ATOM(midi);
 DECL_ATOM(note_off);
 DECL_ATOM(note_on);
@@ -118,6 +117,12 @@ DECL_ATOM(pitch_bend);
 DECL_ATOM(program_change);
 DECL_ATOM(pressure);
 DECL_ATOM(sys);
+// open modes
+DECL_ATOM(raw);
+DECL_ATOM(event);
+DECL_ATOM(binary);
+DECL_ATOM(list);
+DECL_ATOM(running);
 
 
 static ERL_NIF_TERM make_error(ErlNifEnv* env, int e)
@@ -163,8 +168,8 @@ static void midi_scan_init(midi_dev_t* dp)
 {
     dp->state = STATE_STATUS;
     dp->pos = 0;
-    dp->running = 0;
-    dp->status  = 0;
+    dp->running_in = 0;
+    dp->status_in  = 0;
     dp->len = 0;
 }
 
@@ -182,22 +187,22 @@ again:
 	    state = STATE_PARAMS;
 	    dp->pos = 0;
 	    if ((ptr[0] & 0x80) == 0) {
-		dp->status = dp->running;
+		dp->status_in = dp->running_in;
 	    }
 	    else {
-		if ((dp->status & 0xf0) == 0xf0) {
-		    if (dp->status <= 0xf7)
-			dp->running = 0;
+		dp->status_in = ptr[0];
+		if ((dp->status_in & 0xf0) == 0xf0) {
+		    if (dp->status_in <= 0xf7) dp->running_in = 0;
+		    // 0xf8...0xff do not affect running
 		}
-		else {
-		    dp->running = ptr[0];
-		}
-		dp->status = ptr[0];
+		else
+		    dp->running_in = dp->status_in;
+		ptr++;
 		len--;
 	    }
 	    break;
 	case STATE_PARAMS:
-	    switch(dp->status & 0xf0) {
+	    switch(dp->status_in & 0xf0) {
 	    case MIDI_EVENT_NOTEOFF: state = STATE_PARAMS_2; break;
 	    case MIDI_EVENT_NOTEON: state = STATE_PARAMS_2; break;
 	    case MIDI_EVENT_AFTERTOUCH:	state = STATE_PARAMS_2; break;
@@ -206,7 +211,7 @@ again:
 	    case MIDI_EVENT_PROGRAMCHANGE: state = STATE_PARAMS_1; break;
 	    case MIDI_EVENT_PRESSURE: state = STATE_PARAMS_1; break;
 	    case MIDI_EVENT_SYS:
-		switch(dp->status & 0x0f) {
+		switch(dp->status_in & 0x0f) {
 		case 0: state = STATE_PARAMS_F7; break;
 		case 1: state = STATE_PARAMS_0; break;
 		case 2: state = STATE_PARAMS_2; break;
@@ -263,8 +268,8 @@ again:
 		state = STATE_PARAMS_VL;
 	    else
 		state = STATE_PARAMS_V1;
-	    ptr += 1;
-	    len -= 1;		
+	    ptr++;
+	    len--;
 	    break;
 	case STATE_PARAMS_V1:
 	    dp->len = (dp->len << 7) | (ptr[0] & 0x7f);
@@ -272,8 +277,8 @@ again:
 		state = STATE_PARAMS_VL;
 	    else
 		state = STATE_PARAMS_V1;
-	    ptr += 1;
-	    len -= 1;
+	    ptr++;
+	    len--;
 	    break;
 	case STATE_PARAMS_V2:
 	    dp->len = (dp->len << 7) | (ptr[0] & 0x7f);
@@ -281,14 +286,14 @@ again:
 		state = STATE_PARAMS_VL;
 	    else
 		state = STATE_PARAMS_V3;
-	    ptr += 1;
-	    len -= 1;
+	    ptr++;
+	    len--;
 	    break;
 	case STATE_PARAMS_V3:
 	    dp->len = (dp->len << 7) | (ptr[0] & 0x7f);
 	    state = STATE_PARAMS_VL;	    
-	    ptr += 1;
-	    len -= 1;
+	    ptr++;
+	    len--;
 	    break;
 	case STATE_PARAMS_VL:
 	    if (dp->len > 0) {
@@ -308,7 +313,7 @@ again:
 
 done:
     // emit event
-    switch(dp->status & 0xf0) {
+    switch(dp->status_in & 0xf0) {
     case MIDI_EVENT_NOTEOFF:
 	event = enif_make_tuple4(env, ATOM(note_off),
 				 enif_make_int(env, dp->state & 0x0f),
@@ -396,6 +401,7 @@ static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
     ERL_NIF_TERM head, tail;
     int raw_mode = 0;
     int bin_mode = 1;
+    int running_mode = 0;
     
     if (!enif_get_string(env, argv[0], devicename,
 			 sizeof(devicename), ERL_NIF_LATIN1))
@@ -407,8 +413,8 @@ static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
 	else if (head == ATOM(event)) raw_mode = 0;
 	else if (head == ATOM(binary)) bin_mode = 1;
 	else if (head == ATOM(list)) bin_mode = 0;
-	else
-	    return enif_make_badarg(env);
+	else if (head == ATOM(running)) running_mode = 1;
+	else return enif_make_badarg(env);
 	list = tail;
     }
     if (!enif_is_empty_list(env, list))
@@ -427,6 +433,8 @@ static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
     dp->fd = fd;
     dp->raw_mode = raw_mode;
     dp->bin_mode = bin_mode;
+    dp->running_mode = running_mode;
+    dp->status_out = 0;
     midi_scan_init(dp);
     dev = enif_make_resource(env, dp);
     enif_release_resource(dp);
@@ -451,18 +459,33 @@ static ERL_NIF_TERM midi_close(ErlNifEnv* env, int argc,
 }
 
 // write(Synth::integer(), Data::binary())
+// if running mode then check the first byte againt
+// a the status byte to check if we may skip to write it
 static ERL_NIF_TERM midi_write(ErlNifEnv* env, int argc,
 			       const ERL_NIF_TERM argv[])
 {
     midi_dev_t* dp;
     ErlNifBinary binary;
-    int n;
+    int n = 0;
     
     if (!enif_get_resource(env, argv[0], midi_r, (void**)&dp))
 	return enif_make_badarg(env);
     if (!enif_inspect_iolist_as_binary(env,argv[1],&binary))
 	return enif_make_badarg(env);
-    n = write(dp->fd,binary.data,binary.size);
+    if (dp->running_mode && (binary.size >= 2) &&
+	(binary.data[0] == dp->status_out)) {
+	n = write(dp->fd,binary.data+1,binary.size-1);
+    }
+    else if (binary.size >= 1) {
+	n = write(dp->fd,binary.data,binary.size);
+	if (dp->running_mode) {
+	    uint8_t d = binary.data[0];
+	    if (((d & 0xf0) == 0xf0) && (d <= 0xf7))
+		dp->status_out = 0;
+	    else
+		dp->status_out = d;
+	}
+    }
     if (n < 0)
 	return make_error(env, errno);
     return ATOM(ok);
@@ -517,10 +540,7 @@ static int midi_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     LOAD_ATOM(error);
     LOAD_ATOM(undefined);
     LOAD_ATOM(select);
-    LOAD_ATOM(raw);
-    LOAD_ATOM(event);
-    LOAD_ATOM(binary);
-    LOAD_ATOM(list);
+    // evetns
     LOAD_ATOM(midi);    
     LOAD_ATOM(note_off);
     LOAD_ATOM(note_on);
@@ -530,6 +550,13 @@ static int midi_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     LOAD_ATOM(program_change);
     LOAD_ATOM(pressure);
     LOAD_ATOM(sys);
+    // open mode
+    LOAD_ATOM(raw);
+    LOAD_ATOM(event);
+    LOAD_ATOM(binary);
+    LOAD_ATOM(list);
+    LOAD_ATOM(running);
+    
 
     cb.dtor = (ErlNifResourceDtor*) midi_dtor;
     cb.stop = (ErlNifResourceStop*) midi_stop;
