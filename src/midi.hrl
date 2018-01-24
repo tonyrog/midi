@@ -266,54 +266,54 @@
 -define(GM_MIDI_Applause, 126).
 -define(GM_MIDI_Gunshot, 127).
 
-%% GM Midi channel 10 (hmm +1 ? test)
--define(GM_DRUM_Bass_Drum_2, 34).
--define(GM_DRUM_Bass_Drum_1, 35 ).
--define(GM_DRUM_Side_Stick, 36).
--define(GM_DRUM_Snare_Drum_1, 37).
--define(GM_DRUM_Hand_Clap, 38).
--define(GM_DRUM_Snare_Drum_2, 39).
--define(GM_DRUM_Low_Tom_2, 40).
--define(GM_DRUM_Closed_Hi_hat, 41).
--define(GM_DRUM_Low_Tom_1, 42).
--define(GM_DRUM_Pedal_Hi_hat, 43).
--define(GM_DRUM_Mid_Tom_2, 44).
--define(GM_DRUM_Open_Hi_hat, 45).
--define(GM_DRUM_Mid_Tom_1, 46).
--define(GM_DRUM_High_Tom_2, 47).
--define(GM_DRUM_Crash_Cymbal_1, 48).
--define(GM_DRUM_High_Tom_1, 49).
--define(GM_DRUM_Ride_Cymbal_1, 50).
--define(GM_DRUM_Chinese_Cymbal, 51).
--define(GM_DRUM_Ride_Bell, 52).
--define(GM_DRUM_Tambourine, 53).
--define(GM_DRUM_Splash_Cymbal, 54).
--define(GM_DRUM_Cowbell, 55).
--define(GM_DRUM_Crash_Cymbal_2, 56).
--define(GM_DRUM_Vibra_Slap, 57).
--define(GM_DRUM_Ride_Cymbal_2, 58).
--define(GM_DRUM_High_Bongo, 59).
--define(GM_DRUM_Low_Bongo, 60).
--define(GM_DRUM_Mute_High_Conga, 61).
--define(GM_DRUM_Open_High_Conga, 62 ).
--define(GM_DRUM_Low_Conga, 63).
--define(GM_DRUM_High_Timbale, 64).
--define(GM_DRUM_Low_Timbale, 65).
--define(GM_DRUM_High_Agogo, 66).
--define(GM_DRUM_Low_Agogo, 67).
--define(GM_DRUM_Cabasa, 68).
--define(GM_DRUM_Maracas, 69).
--define(GM_DRUM_Short_Whistle, 70).
--define(GM_DRUM_Long_Whistle, 71).
--define(GM_DRUM_Short_Guiro, 72).
--define(GM_DRUM_Long_Guiro, 73).
--define(GM_DRUM_Claves, 74).
--define(GM_DRUM_High_Wood_Block, 75).
--define(GM_DRUM_Low_Wood_Block, 76).
--define(GM_DRUM_Mute_Cuica, 77).
--define(GM_DRUM_Open_Cuica, 78 ).
--define(GM_DRUM_Mute_Triangle, 79).
--define(GM_DRUM_Open_Triangle, 80 ).
+%% GM Midi channel 9
+-define(GM_DRUM_Bass_Drum_2, 35).
+-define(GM_DRUM_Bass_Drum_1, 36).
+-define(GM_DRUM_Side_Stick, 37).
+-define(GM_DRUM_Snare_Drum_1, 38).
+-define(GM_DRUM_Hand_Clap, 39).
+-define(GM_DRUM_Snare_Drum_2, 40).
+-define(GM_DRUM_Low_Tom_2, 41).
+-define(GM_DRUM_Closed_Hi_hat, 42).
+-define(GM_DRUM_Low_Tom_1, 43).
+-define(GM_DRUM_Pedal_Hi_hat, 44).
+-define(GM_DRUM_Mid_Tom_2, 45).
+-define(GM_DRUM_Open_Hi_hat, 46).
+-define(GM_DRUM_Mid_Tom_1, 47).
+-define(GM_DRUM_High_Tom_2, 48).
+-define(GM_DRUM_Crash_Cymbal_1, 49).
+-define(GM_DRUM_High_Tom_1, 50).
+-define(GM_DRUM_Ride_Cymbal_1, 51).
+-define(GM_DRUM_Chinese_Cymbal, 52).
+-define(GM_DRUM_Ride_Bell, 53).
+-define(GM_DRUM_Tambourine, 54).
+-define(GM_DRUM_Splash_Cymbal, 55).
+-define(GM_DRUM_Cowbell, 56).
+-define(GM_DRUM_Crash_Cymbal_2, 57).
+-define(GM_DRUM_Vibra_Slap, 58).
+-define(GM_DRUM_Ride_Cymbal_2, 59).
+-define(GM_DRUM_High_Bongo, 60).
+-define(GM_DRUM_Low_Bongo, 61).
+-define(GM_DRUM_Mute_High_Conga, 62).
+-define(GM_DRUM_Open_High_Conga, 63).
+-define(GM_DRUM_Low_Conga, 64).
+-define(GM_DRUM_High_Timbale, 65).
+-define(GM_DRUM_Low_Timbale, 66).
+-define(GM_DRUM_High_Agogo, 67).
+-define(GM_DRUM_Low_Agogo, 68).
+-define(GM_DRUM_Cabasa, 69).
+-define(GM_DRUM_Maracas, 70).
+-define(GM_DRUM_Short_Whistle, 71).
+-define(GM_DRUM_Long_Whistle, 72).
+-define(GM_DRUM_Short_Guiro, 73).
+-define(GM_DRUM_Long_Guiro, 74).
+-define(GM_DRUM_Claves, 75).
+-define(GM_DRUM_High_Wood_Block, 76).
+-define(GM_DRUM_Low_Wood_Block, 77).
+-define(GM_DRUM_Mute_Cuica, 78).
+-define(GM_DRUM_Open_Cuica, 79).
+-define(GM_DRUM_Mute_Triangle, 80).
+-define(GM_DRUM_Open_Triangle, 81).
 
 -endif.
 

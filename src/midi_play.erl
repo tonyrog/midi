@@ -31,9 +31,12 @@
 -record(tparam,
 	{
 	  ppqn = 0.0 :: float(),  %% pulses per quarter note
-	  mpqn = 0   :: number(), %% micro seconds per quarter beat
+	  mpqn = 0   :: number(), %% micro seconds per quarter note
 	  bpm  = 0.0 :: float(),  %% beats per minute (USEC_PER_MINUTE/MPQN)
-	  tick = 1.0 :: float() %% Number of ticks per microsecond = (MPQN/PPQN)
+	  uspp = 1.0 :: float(),  %% Micro seconds per pulse (MPQN/PPQN)
+	  sig  = {4,4} :: {integer(),integer()}, %% time signature
+	  cc   = 0     :: integer(), %% # MIDI clocks in a metronome click
+	  bb   = 0     :: integer()  %% # 32nd-notes in a MIDI quarter-note
 	}).
 
 file(File) ->
@@ -61,7 +64,7 @@ file(File, Device, BPM, Bank) ->
 	    end,
 	    MPQN = ?USEC_PER_MINUTE/BPM,
 	    PPQN = if Division >= 0 -> Division; true -> 1.0 end,
-	    MidiTick =
+	    USPP =
 		if Division >= 0 ->
 			MPQN / PPQN;
 		   true ->
@@ -75,12 +78,9 @@ file(File, Device, BPM, Bank) ->
 			    end,
 			?DEFAULT_MPQN / (FramesPerSec*TicksPerFrame)
 		end,
-	    TParam = #tparam{mpqn=MPQN,ppqn=PPQN,bpm=BPM,tick=MidiTick},
-	    %% io:format("tparam = ~s\n", [?format_record(tparam,TParam)]),
-	    %% midi baud rate is 31250 => 1302 events / sec
-	    %% remove track id for now, not used
+	    TParam = #tparam{mpqn=MPQN,ppqn=PPQN,bpm=BPM,uspp=USPP},
 	    Tracks1 = [T || {_TID,T} <- Tracks],
-	    run(Fd,Tracks1,TParam),
+	    play(Fd,Tracks1,TParam),
 	    if is_atom(Fd) -> ok;  %% do not close "standard" synth
 	       Device =/= Fd -> midi:close(Fd);
 	       true -> ok
@@ -90,78 +90,73 @@ file(File, Device, BPM, Bank) ->
 	    Error
     end.
 
+play(Fd,Trs,TParam) ->
+    {Trs1,Ts1} = init(Trs,[],[],TParam),
+    play_(Fd,Trs1,Ts1,0,time_us(),TParam).
 
-run(Fd,Trs,TParam) ->
-    StartMidiTick = 0,  %% delay?
-    {Trs1,Ts1} = init(Trs,[],[],StartMidiTick),
-    run_(Fd,Trs1,Ts1,StartMidiTick,time_us(),TParam).
+play_(Fd,Trs,Ts,Ticks,TimeUs,TParam) ->
+    Now = lists:min(Ts),
+    WaitUs = (Now - Ticks)*TParam#tparam.uspp,
+    NextUs = trunc(TimeUs + WaitUs),
+    End = wait_until(NextUs),
+    if End - NextUs > 500 -> io:format("td = ~w\n", [End-NextUs]);
+       true -> ok
+    end,
+    next_(Fd,Trs,Ts,[],[],Now,Ticks,TimeUs,TParam).
 
-run_(Fd,Trs,Ts,StartMidiTick,StartTimeUs,TParam) ->
-    CurMidiTick = lists:min(Ts),
-    NumMidiTicks = CurMidiTick - StartMidiTick,
-    WaitUs = trunc(NumMidiTicks*TParam#tparam.tick),
-    wait_until(StartTimeUs + WaitUs),
-    case next(Fd,Trs,Ts,[],[],CurMidiTick,TParam) of
-	{[],[],_TParam1} ->
-	    ok;
-	{Trs1,Ts1,TParam1} when TParam =/= TParam1 -> %% tempo change
-	    %% recalculate the tick in Ts1? or reset?
-	    run_(Fd,Trs1,Ts1,CurMidiTick,time_us(),TParam1);
-	{Trs1,Ts1,TParam1} ->
-	    run_(Fd,Trs1,Ts1,StartMidiTick,StartTimeUs,TParam1)
-    end.
+next_(Fd,[[E|Es]|Trs],[T|Ts],Trs1,Ts1,Now,Ticks,TimeUs,TParam)
+  when T =< Now ->
+    case exec(Fd,E,TParam) of
+	{tempo,TParam1} ->
+	    next__(Fd,Es,T,Trs,Ts,Trs1,Ts1,Now,Now,time_us(),TParam1);
+	{ok,TParam1} ->
+	    next__(Fd,Es,T,Trs,Ts,Trs1,Ts1,Now,Ticks,TimeUs,TParam1);
+	eot ->
+	    next_(Fd,Trs,Ts,Trs1,Ts1,Now,Ticks,TimeUs,TParam)
+    end;
+next_(Fd,[Es|Trs],[T|Ts],Trs1,Ts1,Now,Ticks,TimeUs,TParam) ->
+    next_(Fd,Trs,Ts,[Es|Trs1],[T|Ts1],Now,Ticks,TimeUs,TParam);
+next_(_Fd,[],[],[],[],_Now,_Ticks,_TimeUs,_TParam) -> 
+    ok;
+next_(Fd,[],[],Trs1,Ts1,_Now,Ticks,TimeUs,TParam) ->
+    play_(Fd,lists:reverse(Trs1),lists:reverse(Ts1),Ticks,TimeUs,TParam).
+
+next__(Fd,[D|Es],T,Trs,Ts,Trs1,Ts1,Now,Ticks,TimeUs,TParam) ->
+    next_(Fd,[Es|Trs],[T+D|Ts],Trs1,Ts1,Now,Ticks,TimeUs,TParam);
+%%    next_(Fd,Trs,Ts,[Es|Trs1],[T+D|Ts1],Now,Ticks,TimeUs,TParam);
+next__(Fd,[],_T,Trs,Ts,Trs1,Ts1,Now,Ticks,TimeUs,TParam) ->
+    io:format("warn: eot not signaled\n", []),
+    next_(Fd,Trs,Ts,Trs1,Ts1,Now,Ticks,TimeUs,TParam).
+
 
 %% load initial delta time from 0
-init([[D|Es] | Trs], Trs1, Ts, Ticks) when is_integer(D) ->
-    init(Trs, [Es|Trs1], [D+Ticks|Ts], Ticks);
-init([], Trs, Ts, _Ticks) -> 
-    {Trs, Ts}.
-
-next(Fd,[[E|Es]|Trs],[T|Ts],Trs1,Ts1,Tick,TParam) when T =< Tick ->
-    case exec(Fd,E,TParam) of
-	{end_of_track,TParam1} ->
-	    next(Fd,Trs,Ts,Trs1,Ts1,Tick,TParam1);
-	{true,TParam1} ->
-	    case Es of
-		[D|Es1] ->
-		    next(Fd,[Es1|Trs],[T+D|Ts],Trs1,Ts1,Tick,TParam1);
-		[] ->
-		    %% warn end of track not signaled ...
-		    next(Fd,Trs,Ts,Trs1,Ts1,Tick,TParam1)
-	    end
-    end;
-next(Fd,[Es|Trs],[T|Ts],Trs1,Ts1,Tick,TParam) ->
-    next(Fd,Trs,Ts,[Es|Trs1],[T|Ts1],Tick,TParam);
-next(_Fd,[],[],Trs1,Ts1,_Tick,TParam) -> 
-    {Trs1,Ts1,TParam}.
+init([[D|Es] | Trs], Trs1, Ts, TParam) when is_integer(D) ->
+    init(Trs, [Es|Trs1], [D|Ts], TParam);
+init([], Trs, Ts, _TParam) -> 
+    {lists:reverse(Trs), lists:reverse(Ts)}.
 
 exec(_Fd,{meta,Meta,Value},TParam) ->
     case Meta of
 	end_of_track ->
-	    %% io:format("end of track\n", []),
-	    {end_of_track,TParam};
+	    eot;
 	tempo ->
 	    PPQN = TParam#tparam.ppqn,
 	    MPQN = Value,
 	    BPM  = ?USEC_PER_MINUTE / MPQN,
-	    MidiTick = MPQN / PPQN,
-	    TParam1 = TParam#tparam{mpqn=MPQN,bpm=BPM,tick=MidiTick},
-	    %% io:format("tparam = ~s\n", [?format_record(tparam,TParam1)]),
-	    {true,TParam1};
-	track_name ->
-	    io:format("~s\n", [Value]),
-	    {true,TParam};
-	text ->
-	    io:format("~s\n", [Value]),
-	    {true,TParam};
+	    USPP = MPQN / PPQN,  %% micro seconds per (midi) pulse
+	    TParam1 = TParam#tparam{mpqn=MPQN,bpm=BPM,uspp=USPP},
+	    {tempo,TParam1};
+	time_signature ->
+	    [NN,DD,CC,BB] = Value,
+	    TParam1 = TParam#tparam{sig={NN,(1 bsl DD)},cc=CC,bb=BB},
+	    {ok,TParam1};
 	_ ->
-	    %% io:format("Meta ~p ~p\n", [Meta,Value]),
-	    {true,TParam}
+	    {ok,TParam}
     end;    
 exec(Fd, E, TParam) ->
     Bytes = midi_codec:event_encode(E),
-    midi:write(Fd, Bytes),
-    {true,TParam}.
+    ok = midi:write(Fd, Bytes),
+    {ok,TParam}.
 
 time_us() ->
     erlang:monotonic_time(micro_seconds).
@@ -170,8 +165,8 @@ wait_until(End) ->
     Now = time_us(),
     if Now < End ->
 	    Delta = End - Now,
-	    if Delta > 2000 -> %% 2ms
-		    timer:sleep(Delta div 1000),
+	    if Delta >= 2000 ->
+		    timer:sleep((Delta-1000) div 1000),
 		    wait_until(End);
 	       true ->
 		    spin_until(End)

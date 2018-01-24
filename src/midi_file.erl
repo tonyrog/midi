@@ -11,7 +11,7 @@
 -export([text_expand/1,text_expand/2]).
 
 load(File) ->
-    case file:open(File,[read,binary]) of
+    case file:open(File,[read,raw,binary]) of
 	{ok,Fd} ->
 	    try read_tune(Fd) of
 		R -> R

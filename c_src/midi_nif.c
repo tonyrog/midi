@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <poll.h>
 
 #include "erl_nif.h"
 #include "erl_driver.h"
@@ -23,6 +24,39 @@
 #else
 #define DBG(...)
 #define BADARG(env) enif_make_badarg((env))
+#endif
+
+#ifdef ALSA
+#include <alsa/asoundlib.h>
+typedef snd_rawmidi_t* midi_handle_t;
+#define INVALID ((snd_rawmidi_t*)0)
+#define WRITE(handle,data,len) snd_rawmidi_write((handle),(data),(len))
+#define READ(handle,data,len) snd_rawmidi_read((handle),(data),(len))
+#define CLOSE(handle) snd_rawmidi_close((handle))
+#define EVENT_HANDLE(handle) alsa_event_handle((handle))
+
+static int alsa_event_handle(midi_handle_t h)
+{
+    int i, n;
+    struct pollfd pfd[4];
+    n = snd_rawmidi_poll_descriptors_count(h);
+    // DBG("# poll descriptors = %d\r\n", n);
+    snd_rawmidi_poll_descriptors(h, pfd, n);
+    if (n == 1)
+	return pfd[0].fd;
+    for (i = 0; i < n; i++) {
+	if (pfd[i].events & POLLIN)
+	    return pfd[i].fd;
+    }
+    return -1;
+}
+#else
+typedef int midi_handle_t;
+#define INVALID -1
+#define WRITE(handle,data,len) write((handle),(data),(len))
+#define READ(handle,data,len) read((handle),(data),(len))
+#define CLOSE(handle) close((handle))
+#define EVENT_HANDLE(handle) (handle)
 #endif
 
 
@@ -80,8 +114,10 @@ static ErlNifResourceType* midi_r;
 
 #define MAX_MIDI_BUF 1024
 
+
 typedef struct _midi_dev_t {
-    int     fd;
+    midi_handle_t in;
+    midi_handle_t out;
     int     state;
     uint8_t params[MAX_MIDI_BUF];
     int     pos;
@@ -136,31 +172,42 @@ static void midi_dtor(ErlNifEnv* env, midi_dev_t* dp)
 {
     UNUSED(env);
 
-    DBG("midi_dtor: close %d\r\n", dp->fd);
-    if (dp->fd >= 0) {
-	close(dp->fd);
+    DBG("midi_dtor: close in=%lx, out=%lx\r\n",
+	(intptr_t)dp->in, (intptr_t)dp->out);
+    if (dp->in != INVALID) {
+	CLOSE(dp->in);
+	dp->in = INVALID;
     }
-    dp->fd = -1;
+    if (dp->out != INVALID) {
+	if (dp->out != dp->in)
+	    CLOSE(dp->out);
+	dp->out = INVALID;
+    }
 }
-
 
 static void midi_stop(ErlNifEnv* env, midi_dev_t* dp,
 		      ErlNifEvent event, int is_direct_call)
 {
     UNUSED(env);
-    DBG("midi_stop: event=%d\r\n", (int)event);
-    if ((int)event >= 0) {
-	close((int)event);
-	if (dp->fd == (int)event)
-	    dp->fd = -1;
+    DBG("midi_stop: event=%lx\r\n", (intptr_t)event);
+    // FIXME?: currently just assume we close main handle
+    if (dp->in != INVALID) {
+	CLOSE(dp->in);
+	dp->in = INVALID;
+    }
+    if (dp->out != INVALID) {
+	if (dp->in != dp->out)
+	    CLOSE(dp->out);
+	dp->out = INVALID;
     }
 }
 
 static void midi_down(ErlNifEnv* env, midi_dev_t* dp,
 		      const ErlNifPid* pid, const ErlNifMonitor* mon)
 {
-    UNUSED(env);    
-    DBG("midi_down: %d\r\n", dp->fd);    
+    UNUSED(env);
+    DBG("midi_down: in=%lx, out=%lx\r\n",
+	(intptr_t)dp->in, (intptr_t)dp->out);
 }
 
 
@@ -392,8 +439,7 @@ done:
 static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
 			      const ERL_NIF_TERM argv[])
 {
-    int fd;
-    int flags;
+    midi_handle_t in, out;
     midi_dev_t* dp;
     char devicename[1024];
     ERL_NIF_TERM dev;
@@ -419,18 +465,32 @@ static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
     }
     if (!enif_is_empty_list(env, list))
 	return enif_make_badarg(env);
-	
-    if ((fd = open(devicename, O_RDWR)) < 0)
+
+#ifdef ALSA
+    {
+	int mode = SND_RAWMIDI_SYNC;
+	if (snd_rawmidi_open(&in, &out, devicename, mode) < 0)
+	    return make_error(env, errno);
+	snd_rawmidi_nonblock(in, 1);
+	snd_rawmidi_nonblock(out, 1);
+    }
+#else
+    if ((in = open(devicename, O_RDWR)) < 0)
 	return make_error(env, errno);
-    flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags|O_NONBLOCK);
-    
+    else {
+	int flags = fcntl(in, F_GETFL, 0);
+	fcntl(in, F_SETFL, flags|O_NONBLOCK);
+    }
+    out = in;
+#endif
     if ((dp = enif_alloc_resource(midi_r, sizeof(midi_dev_t))) == NULL) {
 	int e = errno;
-	close(fd);
+	CLOSE(in);
+	if (in != out) CLOSE(out);
 	return make_error(env, e);
     }
-    dp->fd = fd;
+    dp->in = in;
+    dp->out = out;
     dp->raw_mode = raw_mode;
     dp->bin_mode = bin_mode;
     dp->running_mode = running_mode;
@@ -448,11 +508,14 @@ static ERL_NIF_TERM midi_close(ErlNifEnv* env, int argc,
     midi_dev_t* dp;
     if (!enif_get_resource(env, argv[0], midi_r, (void**)&dp))
 	return enif_make_badarg(env);
-    DBG("midi:close: close %d\r\n", dp->fd);
-    if (dp->fd >= 0) {
+    DBG("midi:close: close in=%lx, out=%lx\r\n",
+	(intptr_t)dp->in, (intptr_t)dp->out);
+    // DRAIN(dp->out) ?
+    if (dp->in != INVALID) {
 	ErlNifPid pid;
 	enif_self(env, &pid);
-	enif_select(env, (ErlNifEvent)dp->fd, ERL_NIF_SELECT_STOP,
+	enif_select(env, (ErlNifEvent)EVENT_HANDLE(dp->in),
+		    ERL_NIF_SELECT_STOP,
 		    dp, &pid, ATOM(undefined));
     }
     return ATOM(ok);
@@ -474,10 +537,10 @@ static ERL_NIF_TERM midi_write(ErlNifEnv* env, int argc,
 	return enif_make_badarg(env);
     if (dp->running_mode && (binary.size >= 2) &&
 	(binary.data[0] == dp->status_out)) {
-	n = write(dp->fd,binary.data+1,binary.size-1);
+	n = WRITE(dp->out,binary.data+1,binary.size-1);
     }
     else if (binary.size >= 1) {
-	n = write(dp->fd,binary.data,binary.size);
+	n = WRITE(dp->out,binary.data,binary.size);
 	if (dp->running_mode) {
 	    uint8_t d = binary.data[0];
 	    if (((d & 0xf0) == 0xf0) && (d <= 0xf7))
@@ -502,12 +565,13 @@ static ERL_NIF_TERM midi_read(ErlNifEnv* env, int argc,
     if (!enif_get_resource(env, argv[0], midi_r, (void**)&dp))
 	return enif_make_badarg(env);
         
-    n = read(dp->fd, (char*)buffer, sizeof(buffer));
+    n = READ(dp->in, (char*)buffer, sizeof(buffer));
     if (n < 0) {
 	if (errno == EAGAIN) {
 	    ErlNifPid pid;
 	    enif_self(env, &pid);
-	    enif_select(env, (ErlNifEvent)dp->fd, ERL_NIF_SELECT_READ,
+	    enif_select(env, (ErlNifEvent)EVENT_HANDLE(dp->in),
+			ERL_NIF_SELECT_READ,
 			dp, &pid, ATOM(undefined));
 	    return ATOM(select);
 	}

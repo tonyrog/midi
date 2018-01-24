@@ -96,7 +96,10 @@ add_node(Node,Acc,DevMidi) ->
 		    {ok,[C,D],""} ->
 			Dev = "/dev/snd/midi"++"C"++integer_to_list(C)++
 			    "D"++integer_to_list(D),
-			Node#{ device => Dev };
+			Node#{ device => Dev,
+			       hw => "hw:"++integer_to_list(C)++"," ++
+				   integer_to_list(D)
+			     };
 		    _ ->
 			Node
 		end;
@@ -105,7 +108,13 @@ add_node(Node,Acc,DevMidi) ->
 		    false ->
 			Node;
 		    Dev ->
-			Node#{ device => Dev }
+			case Dev of  %% FIXME
+			    "/dev/midi"++N ->
+				Node#{ device => Dev,
+				       hw => "hw:"++N++",0,0" };
+			    _ ->
+				Node#{ device => Dev }
+			end
 		end
 	end,
     [Node1|Acc].

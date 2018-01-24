@@ -113,11 +113,13 @@ parse(params_v,[L0,L1,L2|Cs],Status,Running,Params)
 parse(params_v,[L0,L1,L2,L3|Cs],Status,Running,Params)
   when L0 band 16#80 =:= 16#80,
        L1 band 16#80 =:= 16#80,
-       L2 band 16#80 =:= 16#80 ->
-    %% maybe warn if L3 is > 16#7f?
+       L2 band 16#80 =:= 16#80,
+       L3 band 16#80 =:= 0 ->
     Len = ((L0 band 16#7f) bsl 21) bor ((L1 band 16#7f) bsl 14) bor
-	((L2 band 16#7f) bsl 7) bor (L3 band 16#7f),
+	((L2 band 16#7f) bsl 7) bor L3,
     parse({params_v,Len},Cs,Status,Running,Params);
+parse(params_v,[_L0,_L1,_L2,_L3|Cs],Status,Running,Params) ->
+    {{error,bad_parameter_length},{params_v,Cs,Status,Running,Params}};
 parse({params_v,0},Cs,Status,Running,Params) ->
     {{Status,lists:reverse(Params)},{status,Cs,0,Running,[]}};
 parse({params_v,I},[C|Cs],Status,Running,Params) ->
@@ -144,17 +146,17 @@ parse_delta([L0,L1,L2|Cs],State,Status,Running,Params)
   when L0 band 16#80 =:= 16#80,
        L1 band 16#80 =:= 16#80,
        L2 band 16#80 =:= 0 ->
-    D = ((L0 band 16#7f) bsl 14) bor ((L1 band 16#7f) bsl 7) bor L1,
+    D = ((L0 band 16#7f) bsl 14) bor ((L1 band 16#7f) bsl 7) bor L2,
     {{ok,D}, {State,Cs,Status,Running,Params}};
 parse_delta([L0,L1,L2,L3|Cs],State,Status,Running,Params)
   when L0 band 16#80 =:= 16#80,
        L1 band 16#80 =:= 16#80,
-       L2 band 16#80 =:= 16#80 ->
-    %% maybe warn if L3 is > 16#7f?
+       L2 band 16#80 =:= 16#80,
+       L3 band 16#80 =:= 0 ->
     D = ((L0 band 16#7f) bsl 21) bor ((L1 band 16#7f) bsl 14) bor
-	((L2 band 16#7f) bsl 7) bor (L3 band 16#7f),
+	((L2 band 16#7f) bsl 7) bor L3,
     {{ok,D}, {State,Cs,Status,Running,Params}};
-parse_delta(Cs,State,Status,Running,Params) ->
+parse_delta([_L0,_L1,_L2,_L3|Cs],State,Status,Running,Params) ->
     {{error,bad_delta}, {State,Cs,Status,Running,Params}}.
 
 %% encode midi commans fixme binary?
@@ -363,7 +365,7 @@ meta_decode([Meta|Params]) ->
 	?MIDI_META_END_OF_TRACK -> {meta,end_of_track,[]}; %% -
 	?MIDI_META_TEMPO -> %% uint24/big
 	    case Params of
-		[T2,T1,T0] -> {meta,tempo,T2*65536+T1*256+T0}  
+		[T2,T1,T0] -> {meta,tempo,(T2*256+T1)*256+T0}  
 	    end;
 	?MIDI_META_SMPTE_OFFSET -> %% <<HR:8,MN:8,SE:8,FR:8,FF:8>>
 	    case Params of

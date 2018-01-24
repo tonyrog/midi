@@ -16,14 +16,14 @@
 	 volume_fine/3,
 	 bank_fine/3]).
 
--export([start/0, stop/0]).
+-export([start/0, start/1, stop/0]).
 -export([setup_synth/0, open_synth/0]).
 -export([devices/0]).
 -export([find_device_by_port/2]).
 -export([find_synth_input_port/1]).
 
 -export([io_prog/1, input_prog/2]).
-
+-export([proxy/2]).
 %% nifs
 -export([open/2, close_/1, read_/1, write_/2]).
 
@@ -36,11 +36,15 @@
 	erlang:nif_error({nif_not_loaded,module,?MODULE,line,?LINE})).
 
 init() ->
-    Nif = filename:join(code:priv_dir(midi), "midi_drv"),
+    Nif = filename:join(code:priv_dir(midi), "midi_alsa"),
     erlang:load_nif(Nif, 0).
 
 start() ->
     application:ensure_all_started(midi).
+
+start([File]) when is_atom(File) ->
+    application:ensure_all_started(midi),    
+    midi_play:file(atom_to_list(File)).
 
 stop() ->
     application:stop(midi).
@@ -112,6 +116,35 @@ bank_fine(Synth, Chan, Bank) ->
 program_change(Synth, Chan, Prog) ->
     write(Synth, <<?MIDI_PROGRAM_CHANGE(Chan), Prog>>).
 
+%% 
+proxy(InputDevice, OutputDevice) ->
+    {ok,In}  = open(InputDevice,[event,list,running]),
+    {ok,Out} = open(OutputDevice, [running]),
+    proxy_in(In,Out).
+
+proxy_in(In,Out) ->
+    case read(In) of
+	select ->
+	    receive
+		{select,In,undefined,ready_input} ->
+		    proxy_in(In,Out)
+	    end;
+	{ok,N} when is_integer(N) -> %% got N events
+	    proxy_out(In,Out);
+	Error->
+	    Error
+    end.
+
+proxy_out(In, Out) ->
+    receive
+	{midi,In,Event} -> %% driver handle packet
+	    io:format("midi event ~p\n", [Event]),
+	    write(Out, midi_codec:event_encode(Event)),
+	    proxy_out(In,Out)
+    after 0 ->
+	    proxy_in(In,Out)
+    end.
+	    
 io_prog(DeviceName) ->
     input_prog(DeviceName, 
 	       fun(_Fd,Event) ->
@@ -163,7 +196,7 @@ devices() ->
 
 open_synth() ->
     case setup_synth() of
-	{ok,#{ device:=Device} } -> open(Device, [running]);
+	{ok,#{ hw:=Device} } -> open(Device, [running]);
 	Error -> Error
     end.
 

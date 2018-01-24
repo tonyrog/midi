@@ -20,7 +20,6 @@
 
 -define(is_digit(C),   (((C) >= $0) andalso ((C) =< $9))).
 
-
 play_file(File) ->
     play(synth, File).
 
@@ -57,7 +56,7 @@ play_string(Fd,String,Index,Voice) ->
     Tunes = parse_tunes(String,relaxed),
     play(Fd,Tunes,Index,Voice).
 
-play(Ns) -> 
+play(Ns) ->
     play(synth,Ns).
 play(Fd, Ns) ->
     play(Fd, Ns, first, first).
@@ -76,7 +75,6 @@ play(Fd, Ns, Index, Voice) ->
 	   },
     Signature = #{},
     play_notes(Fd,Ns1,Ctx,Signature,[],[]).
-
 
 play_notes(Fd, [{repeat,N}|Ns],Ctx,Sig,SP,RP) ->
     Sig1 = drop_note_sig(Sig),
@@ -119,13 +117,18 @@ play_notes(Fd,Ns,Ctx,Sig,SP,RP) ->
 
 %% fixme: use modal?
 play_notes_(Fd,[bar|Ns],Ctx,Sig,SP,RP) ->
-    %% drop sharpend,flattened and neutralized notes in signature
     Sig1 = drop_note_sig(Sig),
     play_notes(Fd,Ns,Ctx,Sig1,SP,RP);
 play_notes_(Fd,[double_bar|Ns],Ctx,Sig,SP,RP) ->
-    %% drop sharpend,flattened and neutralized notes in signature
     Sig1 = drop_note_sig(Sig),
     play_notes(Fd,Ns,Ctx,Sig1,SP,RP);
+play_notes_(Fd,[thin_thick|Ns],Ctx,Sig,SP,RP) ->
+    Sig1 = drop_note_sig(Sig),
+    play_notes(Fd,Ns,Ctx,Sig1,SP,RP);
+play_notes_(Fd,[think_thin|Ns],Ctx,Sig,SP,RP) ->
+    Sig1 = drop_note_sig(Sig),
+    play_notes(Fd,Ns,Ctx,Sig1,SP,RP);
+
 play_notes_(Fd, [{key,Key,_Modal}|Ns],Ctx,_Sig,SP,RP) ->
     io:format("key: ~s ~s\n", [Key,_Modal]),
     Sig1 = map_key(Key),
@@ -144,10 +147,10 @@ play_notes_(Fd, [{tempo,ULen,T}|Ns],Ctx,Sig,SP,RP) ->
     Ctx1 = Ctx#{ tempo => T, unit_note_length => ULen },
     play_notes(Fd,Ns,Ctx1,Sig,SP,RP);
 play_notes_(Fd, [{midi,channel,Chan}|Ns],Ctx,Sig,SP,RP) ->
-    Ctx1 = Ctx#{ channel => Chan },
+    Ctx1 = Ctx#{channel => Chan},
     play_notes(Fd,Ns,Ctx1,Sig,SP,RP);
-play_notes_(Fd, [{midi,program,Prog}|Ns],Ctx=#{ channel:=Chan},Sig,SP,RP) ->
-    Ctx1 = Ctx#{ program => Prog },
+play_notes_(Fd, [{midi,program,Prog}|Ns],Ctx=#{channel:=Chan},Sig,SP,RP) ->
+    Ctx1 = Ctx#{program => Prog},
     midi:program_change(Fd,Chan,Prog),    
     play_notes(Fd,Ns,Ctx1,Sig,SP,RP);
 play_notes_(Fd,[_|Ns],Ctx,Sig,SP,RP) ->
@@ -298,7 +301,8 @@ play_note(_Fd,rest,_As,_Velocity,#{tempo := Tempo},{D,E}) ->
     RestLen = trunc(((60*1000)/Tempo)*(D/E)),
     timer:sleep(RestLen);
 play_note(Fd,Note,As,Velocity,#{tempo := Tempo, channel:=Chan},{D,E}) ->
-    io:format("play note ~w [~s] length=~w/~w\n", [Note,fmt_note(As),D,E]),
+    %% io:format("play note ~w [~s] chan=~w, length=~w/~w\n", 
+    %%  [Note,fmt_note(As),Chan,D,E]),
     NoteLen = trunc(((60*1000)/Tempo)*(D/E)),
     case lists:member(staccato,As) of
 	true ->
@@ -314,7 +318,7 @@ play_note(Fd,Note,As,Velocity,#{tempo := Tempo, channel:=Chan},{D,E}) ->
     end.
 
 %% Tempo is number of default note lengths per minute
-play_chord(Fd,Ns,As,Velocity,#{tempo := Tempo, channel:=Chan}) ->
+play_chord(Fd,Ns,As,Velocity,#{tempo := Tempo,channel:=Chan}) ->
     Notes = [N || {N,_} <- Ns],
     %% fixme: now we find max length, but we should check instead
     Lens = [{A/B,{A,B}} || {_,{A,B}} <- Ns],
@@ -342,7 +346,6 @@ play_chord(Fd,Ns,As,Velocity,#{tempo := Tempo, channel:=Chan}) ->
 			  Notes)
     end.
 	    
-
 %% fixme: what channel to play guitar chords / bass on?
 play_guitar(Fd,Ns0,_As,Bs,Velocity,_Ctx) ->
     stop_guitar(Fd), %% stop old chord
@@ -391,7 +394,8 @@ fmt_note([Note|As],Acc) when is_integer(Note) ->
 	?f -> fmt_note(As,[$f|Acc]);
 	?g -> fmt_note(As,[$g|Acc]);
 	?a -> fmt_note(As,[$a|Acc]);
-	?b -> fmt_note(As,[$b|Acc])
+	?b -> fmt_note(As,[$b|Acc]);
+	_ -> fmt_note(As,[integer_to_list(Note)|Acc])
     end.
 
 %% 
@@ -405,7 +409,7 @@ fmt_note([Note|As],Acc) when is_integer(Note) ->
 %%         {unit_note_length,L},
 %%         ...,
 %%         {voices, n},
-%%         {parts, ["A",2,"B"]}
+%%         {part,"A2B"}
 %%         {key,K}]
 %% 
 %% Body=
@@ -425,7 +429,8 @@ parse_tunes(Cs,Acc,Mode) ->
 	{Cs1,Header0} ->
 	    {Cs2,Body0} = parse_b(Cs1,[]),
 	    Tune = proplists:get_value(index,Header0,0),
-	    {Header,Body1} = move_bad_voices(Header0, lists:reverse(Body0)),
+	    Header1 = translate_parts(Header0),
+	    {Header,Body1} = move_bad_voices(Header1, lists:reverse(Body0)),
 	    BodyParts = parts(Body1),
 	    parse_tunes(Cs2,[{tune,Tune,Header,BodyParts}|Acc],Mode)
     catch
@@ -433,6 +438,30 @@ parse_tunes(Cs,Acc,Mode) ->
 	    {_Cs1,Body0} = parse_b(Cs,[]),
 	    [{tune,0,[],lists:reverse(Body0)}]
     end.
+
+%% parse part header into parts
+translate_parts([{part,Parts}|Hs]) ->
+    [{parts,parse_parts(Parts)}|Hs];
+translate_parts([H|Hs]) ->
+    [H|translate_parts(Hs)];
+translate_parts([]) ->
+    [].
+
+parse_parts(Cs) ->
+    parse_parts(Cs,[[]]).
+
+parse_parts([$(|Cs],Stack) ->
+    parse_parts(Cs,[[]|Stack]);
+parse_parts([$)|Cs],[Es,Es1|Stack]) ->
+    parse_parts(Cs,[[lists:reverse(Es)|Es1]|Stack]);
+parse_parts([$\s|Cs],Stack) ->
+    parse_parts(Cs,Stack);
+parse_parts([C|Cs],[[E|Es]|Stack]) when C >= $1, C =< $9 ->
+    parse_parts(Cs, [[{C-$0,E}|Es]|Stack]);
+parse_parts([C|Cs],[Es|Stack]) ->
+    parse_parts(Cs, [[[C]|Es]|Stack]);
+parse_parts([], [Es]) ->
+    lists:reverse(Es).
 
 %% select tune if specified, [] if not found
 select_tune(Ns, first) ->
@@ -539,9 +568,15 @@ parse_h(Cs,Acc) ->
 	    parse_h(parse_note_length(Cs1,Acc));
 	[$M,$:|Cs1] ->  %% mandatory (3)
 	    parse_h(parse_meter(Cs1,Acc));
+	%% special hack c: p: midi channel/program
+	[$c,$:|Cs1=[C|_]] when ?is_digit(C) ->
+	    parse_h(parse_iarg(Cs1,[midi,channel],1,Acc));
+	[$p,$:|Cs1=[C|_]] when ?is_digit(C) ->
+	    parse_h(parse_iarg(Cs1,[midi,program],1,Acc));
+
 	[$N,$:|Cs1] -> parse_h(parse_arg(Cs1,notes,Acc));
 	[$O,$:|Cs1] -> parse_h(parse_arg(Cs1,origin,Acc));
-	[$P,$:|Cs1] -> parse_h(parse_arg(Cs1,parts,Acc));
+	[$P,$:|Cs1] -> parse_h(parse_arg(Cs1,part,Acc));
 	[$Q,$:|Cs1] -> parse_h(parse_tempo(Cs1,Acc));
 	[$R,$:|Cs1] -> parse_h(parse_arg(Cs1,rhythm,Acc));
 	[$S,$:|Cs1] -> parse_h(parse_arg(Cs1,source,Acc));
@@ -583,9 +618,13 @@ parse_b(Cs,Acc) ->
 		{ok,Ts,_} ->
 		    parse_b(Cs2,[{midi,Ts}|Acc])
 	    end;
-	    
 	[$%|Cs1] -> {_Line,Cs2} = get_line(Cs1), parse_b(Cs2,Acc);
-
+	%% special short midi
+	[$c,$:|Cs1=[C|_]] when ?is_digit(C) ->
+	    parse_b(parse_iarg(Cs1,[midi,channel],1,Acc));
+	[$p,$:|Cs1=[C|_]] when ?is_digit(C) ->
+	    parse_b(parse_iarg(Cs1,[midi,program],1,Acc));
+	
 	%% headers in body
 	[$P,$:|Cs1] -> parse_b(parse_arg(Cs1,part,Acc));
 	[$V,$:|Cs1] -> parse_b(parse_voice(Cs1,Acc));
@@ -609,6 +648,9 @@ parse_b(Cs,Acc) ->
 	[$a|Cs1]    -> parse_b(Cs1,[{note,?a,{1,1}}|Acc]);
 	[$b|Cs1]    -> parse_b(Cs1,[{note,?b,{1,1}}|Acc]);
 
+	%% Drums (hack)
+	[$@|Cs1] -> parse_drum(Cs1,Acc);
+
 	[$z|Cs1]    -> parse_b(Cs1,[{rest,{1,1}}|Acc]);
 	[$x|Cs1]    -> parse_b(Cs1,[{space,{1,1}}|Acc]);
 	[$'|Cs1]    -> parse_b(Cs1,[tick|Acc]);
@@ -616,23 +658,23 @@ parse_b(Cs,Acc) ->
 	[$|,$||Cs1]  -> parse_b(Cs1,[double_bar|Acc]);
 	[$|,$]|Cs1]  -> parse_b(Cs1,[thin_thick|Acc]);
 	[$[,$||Cs1]  -> parse_b(Cs1,[thick_thin|Acc]);
-	[$|,$:|Cs1] ->  parse_iarg(Cs1,[repeat],1,Acc);
+	[$|,$:|Cs1] ->  parse_b(parse_iarg(Cs1,[repeat],1,Acc));
 	[$:,$||Cs1=[C|_]] when ?is_digit(C) ->
-	    parse_iarg(Cs1,[alt_end],1,[repeat_end|Acc]);
+	    parse_b(parse_iarg(Cs1,[alt_end],1,[repeat_end|Acc]));
 	[$:,$||Cs1]  ->
 	    parse_b(Cs1,[repeat_end|Acc]);
 	[$:,$:|Cs1]  -> parse_b(Cs1,[{repeat,1},repeat_end|Acc]);
 	[$||Cs1=[C|_]] when ?is_digit(C) ->
-	    parse_iarg(Cs1,[alt_end],1,[bar|Acc]);
+	    parse_b(parse_iarg(Cs1,[alt_end],1,[bar|Acc]));
 	[$||Cs1]     -> parse_b(Cs1,[bar|Acc]);
 	[$[|Cs1=[C|_]] when ?is_digit(C) ->
-	    parse_iarg(Cs1,[repeat],1,Acc);
+	    parse_b(parse_iarg(Cs1,[repeat],1,Acc));
 	[$(|Cs1=[C|_]] when ?is_digit(C) ->
-	    parse_iarg(Cs1,[tuple],1,Acc);
+	    parse_b(parse_iarg(Cs1,[tuple],1,Acc));
 	[$[ | Cs1]  -> parse_block(Cs1,[],Acc);
 	[${ | Cs1]  -> parse_grace(Cs1,[],Acc);
 	[$( | Cs1]  -> parse_slur(Cs1,Acc);
-	[$" | Cs1]  -> parse_string(Cs1,[],Acc);
+	[$" | Cs1]  -> parse_str(Cs1,[],Acc);
 	[$! | Cs1]  -> parse_symbol(Cs1,[],Acc);
 	[$>|Cs1]    -> parse_b(Cs1,[dot|Acc]);
 	[$<|Cs1]    -> parse_b(Cs1,[dotm|Acc]);
@@ -648,6 +690,97 @@ parse_b(Cs,Acc) ->
 	[$/|Cs1] -> parse_length_shorten(Cs1,Acc);
 	Cs1=[C|_] when ?is_digit(C) -> parse_length_extend(Cs1,Acc)
     end.
+
+parse_drum(Cs, Acc) ->
+    case drum_name(Cs,[]) of
+	{0,Cs1} -> parse_b(Cs1, Acc);
+	{D,Cs1} -> parse_b(Cs1,[{note,D,{1,1}}|Acc])
+    end.
+
+drum_name([$@|Cs],Acc) ->
+    case string:to_lower(lists:reverse(Acc)) of
+	"bassdrum1"  -> {?GM_DRUM_Bass_Drum_1,Cs};
+	"bassdrum2"  -> {?GM_DRUM_Bass_Drum_2,Cs};
+	"bassdrum"   -> {?GM_DRUM_Bass_Drum_1,Cs};
+	"bass"       -> {?GM_DRUM_Bass_Drum_1,Cs};
+	"b"          -> {?GM_DRUM_Bass_Drum_1,Cs};
+	"snaredrum1" -> {?GM_DRUM_Snare_Drum_1,Cs};
+	"snaredrum2" -> {?GM_DRUM_Snare_Drum_2,Cs};
+	"snaredrum"  -> {?GM_DRUM_Snare_Drum_1,Cs};
+	"snare"      -> {?GM_DRUM_Snare_Drum_1,Cs};
+	"s"          -> {?GM_DRUM_Snare_Drum_1,Cs};
+
+	"openhihat"  -> {?GM_DRUM_Open_Hi_hat,Cs};
+	"oh"         -> {?GM_DRUM_Open_Hi_hat,Cs};
+	"closedhihat" -> {?GM_DRUM_Closed_Hi_hat,Cs};
+	"ch"         -> {?GM_DRUM_Closed_Hi_hat,Cs};
+	"pedalhihat" -> {?GM_DRUM_Pedal_Hi_hat,Cs};
+	"ph"         -> {?GM_DRUM_Pedal_Hi_hat,Cs};
+
+	"lowtom1"  -> {?GM_DRUM_Low_Tom_1,Cs};
+	"lowtom2"  -> {?GM_DRUM_Low_Tom_2,Cs};
+	"lowtom"   -> {?GM_DRUM_Low_Tom_1,Cs};
+	"lt"       -> {?GM_DRUM_Low_Tom_1,Cs};
+	"midtom1"  -> {?GM_DRUM_Mid_Tom_1,Cs};
+	"midtom2"  -> {?GM_DRUM_Mid_Tom_2,Cs};
+	"midtom"   -> {?GM_DRUM_Mid_Tom_1,Cs};
+	"mt"       -> {?GM_DRUM_Mid_Tom_1,Cs};
+	"hightom1" -> {?GM_DRUM_High_Tom_1,Cs};
+	"hightom2" -> {?GM_DRUM_High_Tom_2,Cs};
+	"hightom"  -> {?GM_DRUM_High_Tom_1,Cs};
+	"ht"       -> {?GM_DRUM_High_Tom_1,Cs};
+
+	"crashcymbal1" -> {?GM_DRUM_Crash_Cymbal_1,Cs};
+	"crashcymbal2" -> {?GM_DRUM_Crash_Cymbal_2,Cs};
+	"crashcymbal" -> {?GM_DRUM_Crash_Cymbal_1,Cs};
+	"ridecymbal1" -> {?GM_DRUM_Ride_Cymbal_1,Cs};
+	"ridecymbal2" -> {?GM_DRUM_Ride_Cymbal_2,Cs};
+	"ridecymbal" -> {?GM_DRUM_Ride_Cymbal_1,Cs};
+	"splashcymbal" -> {?GM_DRUM_Splash_Cymbal,Cs};
+
+	"chinesecymbal" -> {?GM_DRUM_Chinese_Cymbal,Cs};
+	"sidestick" -> {?GM_DRUM_Side_Stick,Cs};
+	"handclap" -> {?GM_DRUM_Hand_Clap,Cs};
+	"ridebell" -> {?GM_DRUM_Ride_Bell,Cs};
+	"tambourine" -> {?GM_DRUM_Tambourine,Cs};
+	"cowbell" -> {?GM_DRUM_Cowbell,Cs};
+	"vibraslap" -> {?GM_DRUM_Vibra_Slap,Cs};
+	"highbongo" -> {?GM_DRUM_High_Bongo,Cs};
+	"lowbongo" -> {?GM_DRUM_Low_Bongo,Cs};
+	"mutehighconga" -> {?GM_DRUM_Mute_High_Conga,Cs};
+	"openhighconga" -> {?GM_DRUM_Open_High_Conga,Cs};
+	"lowconga" -> {?GM_DRUM_Low_Conga,Cs};
+	"hightimbale" -> {?GM_DRUM_High_Timbale,Cs};
+	"lowtimbale" -> {?GM_DRUM_Low_Timbale,Cs};
+	"highagogo" -> {?GM_DRUM_High_Agogo,Cs};
+	"lowagogo" -> {?GM_DRUM_Low_Agogo,Cs};
+	"cabasa" -> {?GM_DRUM_Cabasa,Cs};
+	"maracas" -> {?GM_DRUM_Maracas,Cs};
+	"shortwhistle" -> {?GM_DRUM_Short_Whistle,Cs};
+	"longwhistle" -> {?GM_DRUM_Long_Whistle,Cs};
+	"shortguiro" -> {?GM_DRUM_Short_Guiro,Cs};
+	"longguiro" -> {?GM_DRUM_Long_Guiro,Cs};
+	"claves" -> {?GM_DRUM_Claves,Cs};
+	"highwoodblock" -> {?GM_DRUM_High_Wood_Block,Cs};
+	"lowwoodblock" -> {?GM_DRUM_Low_Wood_Block,Cs};
+	"mutecuica" -> {?GM_DRUM_Mute_Cuica,Cs};
+	"opencuica" -> {?GM_DRUM_Open_Cuica,Cs};
+	"mutetriangle" -> {?GM_DRUM_Mute_Triangle,Cs};
+	"opentriangle" -> {?GM_DRUM_Open_Triangle,Cs};
+	_ -> {0,Cs}
+    end;
+drum_name([$_|Cs],Acc) -> drum_name(Cs, Acc);
+drum_name([$-|Cs],Acc) -> drum_name(Cs, Acc);
+drum_name([C|Cs],Acc) when
+      C >= $0, C =< $9;
+      C >= $a, C =< $z;
+      C >= $A, C =< $Z -> drum_name(Cs, [C|Acc]);
+drum_name(Cs,Acc) -> 
+    io:format("warning: drum name error ~s\n", [lists:reverse(Acc)]),
+    {0,Cs}.
+
+drum_(Cs,D,Acc) ->
+    parse_b(Cs,[{note,D,{1,1}}|Acc]).
 
 %% parse length of note/rest and combine into a note with length
 %% {note,MidiValue,{A,B}}
@@ -678,11 +811,11 @@ length_note(Cs, Len, [{space,L}|Acc],[]) -> %% can not be prefixed
 
 
 parse_iarg([C1,C2|Cs1],Ts,_D,Acc) when ?is_digit(C1), ?is_digit(C2) ->
-    parse_b(Cs1,[build_tuple(Ts, (C1-$0)*10+(C2-$0))|Acc]);
+    {Cs1,[build_tuple(Ts, (C1-$0)*10+(C2-$0))|Acc]};
 parse_iarg([C1|Cs1],Ts,_D,Acc) when ?is_digit(C1) ->
-    parse_b(Cs1,[build_tuple(Ts,(C1-$0))|Acc]);
+    {Cs1,[build_tuple(Ts,(C1-$0))|Acc]};
 parse_iarg(Cs1,Ts,D,Acc) ->
-    parse_b(Cs1,[build_tuple(Ts,D)|Acc]).
+    {Cs1,[build_tuple(Ts,D)|Acc]}.
 
 %% if '_' is an element the replace '_' with Value
 %% otherwise append Value to Tuple
@@ -772,26 +905,36 @@ parse_symbol([C|Cs],Bs,Acc) ->
 parse_symbol([],Bs,Acc) ->
     parse_b([],[{symbol,lists:reverse(Bs)}|Acc]).
 
-parse_string([$"|Cs],Bs,Acc) ->
-    parse_string_(lists:reverse(Bs),Cs,Acc);
-parse_string([C|Cs], Bs, Acc) ->
-    parse_string(Cs,[C|Bs],Acc);
-parse_string([], Bs, Acc) ->
-    parse_string_(lists:reverse(Bs),[],Acc).
+parse_str([$"|Cs],Bs,Acc) ->
+    parse_str_(lists:reverse(Bs),skip_ws(Cs),Acc);
+parse_str([C|Cs], Bs, Acc) ->
+    parse_str(Cs,[C|Bs],Acc);
+parse_str([], Bs, Acc) ->
+    parse_str_(lists:reverse(Bs),[],Acc).
 
-parse_string_([$^|String],Cs,Acc) ->
+skip_ws([$\s|Cs]) -> skip_ws(Cs);
+skip_ws([$\t|Cs]) -> skip_ws(Cs);
+skip_ws(Cs) -> Cs.
+
+parse_str_([$^|String],Cs,Acc) ->
     parse_b(Cs, [{annotate,above,String}|Acc]);
-parse_string_([$_|String],Cs,Acc) ->
+parse_str_([$_|String],Cs,Acc) ->
     parse_b(Cs, [{annotate,below,String}|Acc]);
-parse_string_([$<|String],Cs,Acc) ->
+parse_str_([$<|String],Cs,Acc) ->
     parse_b(Cs, [{annotate,left,String}|Acc]);
-parse_string_([$>|String],Cs,Acc) ->
+parse_str_([$>|String],Cs,Acc) ->
     parse_b(Cs, [{annotate,right,String}|Acc]);
-parse_string_([$@|String],Cs,Acc) ->
+parse_str_([$@|String],Cs,Acc) ->
     parse_b(Cs, [{annotate,any,String}|Acc]);
-parse_string_([$~|Chord],Cs,Acc) ->
+
+parse_str_(String,[$| | Cs],Acc) ->
+    parse_b(Cs, [bar,{part,String}|Acc]);
+parse_str_(String,[$[,$| | Cs],Acc) ->
+    parse_b(Cs, [thick_thin,{part,String}|Acc]);
+
+parse_str_([$~|Chord],Cs,Acc) ->
     parse_guitar_chord_(Chord,"~",Cs,Acc);
-parse_string_(Chord,Cs,Acc) ->
+parse_str_(Chord,Cs,Acc) ->
     parse_guitar_chord_(Chord,"",Cs,Acc).
 
 parse_guitar_chord_(String,P,Cs,Acc) ->
@@ -1001,7 +1144,6 @@ parse_unsigned(_) ->
 parse_unsigned([C|Cs],N) when ?is_digit(C) ->
     parse_unsigned(Cs, N*10+(C-$0));
 parse_unsigned(Cs, N) -> {N,Cs}.
-
 
 new_line() ->
     case get(line) of
