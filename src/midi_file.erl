@@ -16,7 +16,7 @@ load(File) ->
 	    try read_tune(Fd) of
 		R -> R
 	    catch
-		error:E -> {error,E}
+		error:E -> {error,E,erlang:get_stacktrace()}
 	    after
 		file:close(Fd)
 	    end;
@@ -43,7 +43,7 @@ read_track(Fd, I) ->
     case read_chunk(Fd) of
 	{ok,_Chunk={<<"MTrk">>,Data}} ->
 	    %% io:format("Track = ~p\n", [_Chunk]),
-	    State = midi_codec:init(binary_to_list(Data)),
+	    State = midi_codec:init(Data),
 	    case parse_track(State, []) of
 		{ok,Cmds} ->
 		    {I,Cmds};

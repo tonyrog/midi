@@ -19,14 +19,14 @@
 -define(b, 83).
 
 %% MIDI message types
--define(MIDI_EVENT_NOTEOFF, 	  16#80).  %% channel 0-15 in lower nibble
--define(MIDI_EVENT_NOTEON, 	  16#90).  %% channel 0-15 in lower nibble
--define(MIDI_EVENT_AFTERTOUCH,    16#A0).
--define(MIDI_EVENT_CONTROLCHANGE, 16#B0).  %% channel 0-15 in lower nibble
--define(MIDI_EVENT_PROGRAMCHANGE, 16#C0).  %% channel 0-15 in lower nibble
--define(MIDI_EVENT_PRESSURE,      16#D0).
--define(MIDI_EVENT_PITCHBEND,     16#E0).
--define(MIDI_EVENT_SYS,           16#F0).
+-define(MIDI_EVENT_NOTEOFF, 	  16#8).  %% channel 0-15 in lower nibble
+-define(MIDI_EVENT_NOTEON, 	  16#9).  %% channel 0-15 in lower nibble
+-define(MIDI_EVENT_AFTERTOUCH,    16#A).
+-define(MIDI_EVENT_CONTROLCHANGE, 16#B).  %% channel 0-15 in lower nibble
+-define(MIDI_EVENT_PROGRAMCHANGE, 16#C).  %% channel 0-15 in lower nibble
+-define(MIDI_EVENT_PRESSURE,      16#D).
+-define(MIDI_EVENT_PITCHBEND,     16#E).
+-define(MIDI_EVENT_SYS,           16#F).
 
 -define(MIDI_META_TEXT,           16#01).  %% text
 -define(MIDI_META_COPYRIGHT,      16#02).  %% text

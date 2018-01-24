@@ -18,200 +18,191 @@
 
 -include("midi.hrl").
 
-init(Cs) ->
-    {status, Cs, 0, 0, []}.
+init(Data) ->
+    {status, Data, 0, 0, []}.
 
 %% continue
-scan(St={_State,[],_Status,_Running,_Params}) ->
+scan(St={_State,<<>>,_Status,_Running,_Params}) ->
     {more,St};
-scan({State,Cs,Status,Running,Params}) ->
-    parse(State,Cs,Status,Running,Params).
+scan({State,Data,Status,Running,Params}) ->
+    parse(State,Data,Status,Running,Params).
 
 %% continue
-scan(Chars, {State,Cs,Status,Running,Params}) ->
-    parse(State,Cs++Chars,Status,Running,Params).
+scan(Bin, {State,Data,Status,Running,Params}) ->
+    parse(State,<<Data/binary,Bin/binary>>,Status,Running,Params).
 
-parse(status, Cs=[C|_], _Status, Running, _Params) 
-  when C band 16#80 =:= 0 -> %% mark as running event?
-    parse(params, Cs, Running, Running, []);
-parse(status, [Status|Cs], _Status, Running, _Params) ->
+parse(status, Data= <<0:1,_:7,_/binary>>, _Status, Running, _Params) ->
+    %% mark as running event?
+    parse(params, Data, Running, Running, []);
+parse(status, <<Status,Data/binary>>, _Status, Running, _Params) ->
     if Status band 16#f0 =:= 16#f0 ->
-	    if Status =< 16#f7 -> 
-		    parse(params,Cs,Status,0,[]);
+	    if Status =< 16#f7 ->
+		    parse(params,Data,Status,0,[]);
 	       true ->
-		    parse(params,Cs,Status,Running,[])
+		    parse(params,Data,Status,Running,[])
 	    end;
        true -> 
-	    parse(params,Cs,Status,Status,[])
+	    parse(params,Data,Status,Status,[])
     end;
-parse(status, [], Status, Running, Params) ->
-    {eot, {status,[],Status,Running,Params}};
-parse(params,Cs,Status,Running,Params) ->
-    case Status band 16#f0 of
+parse(status, <<>>, Status, Running, Params) ->
+    {eot, {status,<<>>,Status,Running,Params}};
+parse(params,Data,Status,Running,Params) ->
+    case Status bsr 4 of
 	?MIDI_EVENT_NOTEOFF ->
-	    parse(params_2,Cs,Status,Running,Params);
+	    parse(params_2,Data,Status,Running,Params);
 	?MIDI_EVENT_NOTEON ->
-	    parse(params_2,Cs,Status,Running,Params);
+	    parse(params_2,Data,Status,Running,Params);
 	?MIDI_EVENT_AFTERTOUCH ->
-	    parse(params_2,Cs,Status,Running,Params);
+	    parse(params_2,Data,Status,Running,Params);
 	?MIDI_EVENT_CONTROLCHANGE ->
-	    parse(params_2,Cs,Status,Running,Params);
+	    parse(params_2,Data,Status,Running,Params);
 	?MIDI_EVENT_PITCHBEND ->
-	    parse(params_2,Cs,Status,Running,Params);
+	    parse(params_2,Data,Status,Running,Params);
 	?MIDI_EVENT_PROGRAMCHANGE ->
-	    parse(params_1,Cs,Status,Running,Params);
+	    parse(params_1,Data,Status,Running,Params);
 	?MIDI_EVENT_PRESSURE ->
-	    parse(params_1,Cs,Status,Running,Params);
+	    parse(params_1,Data,Status,Running,Params);
 	?MIDI_EVENT_SYS ->
 	    case Status band 16#0f of
-		0  -> parse(params_f7,Cs,Status,Running,Params);
-		1  -> parse(params_0,Cs,Status,Running,Params);
-		2  -> parse(params_2,Cs,Status,Running,Params);
-		3  -> parse(params_1,Cs,Status,Running,Params);
-		4  -> parse(params_0,Cs,Status,Running,Params);
-		5  -> parse(params_0,Cs,Status,Running,Params);
-		6  -> parse(params_0,Cs,Status,Running,Params);
-		7  -> parse(params_0,Cs,Status,Running,Params);
-		8  -> parse(params_0,Cs,Status,Running,Params);
-		9  -> parse(params_0,Cs,Status,Running,Params);
-		10 -> parse(params_0,Cs,Status,Running,Params);
-		11 -> parse(params_0,Cs,Status,Running,Params);
-		12 -> parse(params_0,Cs,Status,Running,Params);
-		13 -> parse(params_0,Cs,Status,Running,Params);
-		14 -> parse(params_0,Cs,Status,Running,Params);
-		15 -> parse(params_v1,Cs,Status,Running,Params)
+		0  -> parse(params_f7,Data,Status,Running,Params);
+		1  -> parse(params_0,Data,Status,Running,Params);
+		2  -> parse(params_2,Data,Status,Running,Params);
+		3  -> parse(params_1,Data,Status,Running,Params);
+		4  -> parse(params_0,Data,Status,Running,Params);
+		5  -> parse(params_0,Data,Status,Running,Params);
+		6  -> parse(params_0,Data,Status,Running,Params);
+		7  -> parse(params_0,Data,Status,Running,Params);
+		8  -> parse(params_0,Data,Status,Running,Params);
+		9  -> parse(params_0,Data,Status,Running,Params);
+		10 -> parse(params_0,Data,Status,Running,Params);
+		11 -> parse(params_0,Data,Status,Running,Params);
+		12 -> parse(params_0,Data,Status,Running,Params);
+		13 -> parse(params_0,Data,Status,Running,Params);
+		14 -> parse(params_0,Data,Status,Running,Params);
+		15 -> parse(params_v1,Data,Status,Running,Params)
 	    end
     end;
 
-parse(params_0,Cs,Status,Running,Params) ->
-    {{Status,Params},{status,Cs,0,Running,[]}};
-parse(params_1,[C|Cs],Status,Running,_Params) ->
-    {{Status,[C]},{status,Cs,0,Running,[]}};
-parse(params_2,[C1,C2|Cs],Status,Running,_Params) ->
-    {{Status,[C1,C2]},{status,Cs,0,Running,[]}};
-parse(params_f7,[16#f7|Cs],Status,Running,Params) ->
-    {{Status,lists:reverse(Params)},{status,Cs,0,Running,[]}};
-parse(params_f7,[C|Cs],Status,Running,Params) ->
-    parse(params_f7,Cs,Status,Running,[C|Params]);
-parse(params_v1,[Meta|Cs],Status,Running,Params) ->
-    parse(params_v,Cs,Status,Running,[Meta|Params]);
-parse(params_v,[L0|Cs],Status,Running,Params)
-  when L0 band 16#80 =:= 0 ->
+parse(params_0,Data,Status,Running,Params) ->
+    {{Status,Params},{status,Data,0,Running,[]}};
+parse(params_1,<<C,Data/binary>>,Status,Running,_Params) ->
+    {{Status,[C]},{status,Data,0,Running,[]}};
+parse(params_2,<<C1,C2,Data/binary>>,Status,Running,_Params) ->
+    {{Status,[C1,C2]},{status,Data,0,Running,[]}};
+parse(params_f7,<<16#f7,Data/binary>>,Status,Running,Params) ->
+    {{Status,lists:reverse(Params)},{status,Data,0,Running,[]}};
+parse(params_f7,<<C,Data/binary>>,Status,Running,Params) ->
+    parse(params_f7,Data,Status,Running,[C|Params]);
+parse(params_v1,<<Meta,Data/binary>>,Status,Running,Params) ->
+    parse(params_v,Data,Status,Running,[Meta|Params]);
+parse(params_v,<<0:1,L0:7,Data/binary>>,Status,Running,Params) ->
     Len = L0,
-    parse({params_v,Len},Cs,Status,Running,Params);
-parse(params_v,[L0,L1|Cs],Status,Running,Params)
-  when L0 band 16#80 =:= 16#80,
-       L1 band 16#80 =:= 0 ->
-    Len = ((L0 band 16#7f) bsl 7) bor L1,
-    parse({params_v,Len},Cs,Status,Running,Params);
-parse(params_v,[L0,L1,L2|Cs],Status,Running,Params)
-  when L0 band 16#80 =:= 16#80,
-       L1 band 16#80 =:= 16#80,
-       L2 band 16#80 =:= 0 ->
-    Len = ((L0 band 16#7f) bsl 14) bor ((L1 band 16#7f) bsl 7) bor L2,
-    parse({params_v,Len},Cs,Status,Running,Params);
-parse(params_v,[L0,L1,L2,L3|Cs],Status,Running,Params)
-  when L0 band 16#80 =:= 16#80,
-       L1 band 16#80 =:= 16#80,
-       L2 band 16#80 =:= 16#80,
-       L3 band 16#80 =:= 0 ->
-    Len = ((L0 band 16#7f) bsl 21) bor ((L1 band 16#7f) bsl 14) bor
-	((L2 band 16#7f) bsl 7) bor L3,
-    parse({params_v,Len},Cs,Status,Running,Params);
-parse(params_v,[_L0,_L1,_L2,_L3|Cs],Status,Running,Params) ->
-    {{error,bad_parameter_length},{params_v,Cs,Status,Running,Params}};
-parse({params_v,0},Cs,Status,Running,Params) ->
-    {{Status,lists:reverse(Params)},{status,Cs,0,Running,[]}};
-parse({params_v,I},[C|Cs],Status,Running,Params) ->
-    parse({params_v,I-1},Cs,Status,Running,[C|Params]);
-parse(State,[],Status,Running,Params) ->
-    {more, {State,[],Status,Running,lists:reverse(Params)}}.
+    parse({params_v,Len},Data,Status,Running,Params);
+parse(params_v,<<1:1,L0:7,0:1,L1:7,Data/binary>>,Status,Running,Params) ->
+    Len = (L0 bsl 7) bor L1,
+    parse({params_v,Len},Data,Status,Running,Params);
+parse(params_v,<<1:1,L0:7,1:1,L1:7,0:1,L2:7,Data/binary>>,
+      Status,Running,Params) ->
+    Len = (L0 bsl 14) bor (L1 bsl 7) bor L2,
+    parse({params_v,Len},Data,Status,Running,Params);
+parse(params_v,<<1:1,L0:7,1:1,L1:7,1:1,L2:7,0:1,L3:7,Data/binary>>,
+      Status,Running,Params) ->
+    Len = (L0 bsl 21) bor (L1 bsl 14) bor (L2 bsl 7) bor L3,
+    parse({params_v,Len},Data,Status,Running,Params);
+parse(params_v,<<_,_,_,_,Data/binary>>,Status,Running,Params) ->
+    {{error,bad_parameter_length},{params_v,Data,Status,Running,Params}};
+parse({params_v,0},Data,Status,Running,Params) ->
+    {{Status,lists:reverse(Params)},{status,Data,0,Running,[]}};
+parse({params_v,I},<<C,Data/binary>>,Status,Running,Params) ->
+    parse({params_v,I-1},Data,Status,Running,[C|Params]);
+parse(State,<<>>,Status,Running,Params) ->
+    {more, {State,<<>>,Status,Running,lists:reverse(Params)}}.
 
+scan_delta({status,<<>>,Status,Running,Params}) ->
+    {eot, {status,<<>>,Status,Running,Params}};
+scan_delta({State,Data,Status,Running,Params}) ->
+    parse_delta(Data,State,Status,Running,Params).
 
-scan_delta({status,[],Status,Running,Params}) ->
-    {eot, {status,[],Status,Running,Params}};
-scan_delta({State,Cs,Status,Running,Params}) ->
-    parse_delta(Cs,State,Status,Running,Params).
-
-parse_delta([L0|Cs],State,Status,Running,Params)
-  when L0 band 16#80 =:= 0 ->
-    D = L0,
-    {{ok,D}, {State,Cs,Status,Running,Params}};
-parse_delta([L0,L1|Cs],State,Status,Running,Params)
-  when L0 band 16#80 =:= 16#80,
-       L1 band 16#80 =:= 0 ->
-    D = ((L0 band 16#7f) bsl 7) bor L1,
-    {{ok,D}, {State,Cs,Status,Running,Params}};
-parse_delta([L0,L1,L2|Cs],State,Status,Running,Params)
-  when L0 band 16#80 =:= 16#80,
-       L1 band 16#80 =:= 16#80,
-       L2 band 16#80 =:= 0 ->
-    D = ((L0 band 16#7f) bsl 14) bor ((L1 band 16#7f) bsl 7) bor L2,
-    {{ok,D}, {State,Cs,Status,Running,Params}};
-parse_delta([L0,L1,L2,L3|Cs],State,Status,Running,Params)
-  when L0 band 16#80 =:= 16#80,
-       L1 band 16#80 =:= 16#80,
-       L2 band 16#80 =:= 16#80,
-       L3 band 16#80 =:= 0 ->
-    D = ((L0 band 16#7f) bsl 21) bor ((L1 band 16#7f) bsl 14) bor
-	((L2 band 16#7f) bsl 7) bor L3,
-    {{ok,D}, {State,Cs,Status,Running,Params}};
+parse_delta(<<0:1,L0:7,Data/binary>>,State,Status,Running,Params) ->
+    Len = L0,
+    {{ok,Len}, {State,Data,Status,Running,Params}};
+parse_delta(<<1:1,L0:7,0:1,L1:7,Data/binary>>,State,Status,Running,Params) ->
+    Len = (L0 bsl 7) bor L1,
+    {{ok,Len}, {State,Data,Status,Running,Params}};
+parse_delta(<<1:1,L0:7,1:1,L1:7,0:1,L2:7,Data/binary>>,
+	    State,Status,Running,Params) ->
+    Len = (L0 bsl 14) bor (L1 bsl 7) bor L2,
+    {{ok,Len}, {State,Data,Status,Running,Params}};
+parse_delta(<<1:1,L0:7,1:1,L1:7,1:1,L2:7,0:1,L3:7,Data/binary>>,
+	    State,Status,Running,Params) ->
+    Len = (L0 bsl 21) bor (L1 bsl 14) bor (L2 bsl 7) bor L3,
+    {{ok,Len}, {State,Data,Status,Running,Params}};
 parse_delta([_L0,_L1,_L2,_L3|Cs],State,Status,Running,Params) ->
     {{error,bad_delta}, {State,Cs,Status,Running,Params}}.
 
 %% encode midi commans fixme binary?
 event_encode({note_off,Chan,Note,Velocity}) ->
-    [?MIDI_EVENT_NOTEOFF bor (Chan band 16#f),
-     Note band 16#7f, Velocity band 16#7f];
+    <<?MIDI_EVENT_NOTEOFF:4,Chan:4, 0:1, Note:7, 0:1, Velocity:7>>;
 event_encode({note_on,Chan,Note,Velocity}) ->
-    [?MIDI_EVENT_NOTEON bor (Chan band 16#f),
-     Note band 16#7f, Velocity band 16#7f];
+    <<?MIDI_EVENT_NOTEON:4,Chan:4, 0:1, Note:7, 0:1, Velocity:7>>;
 event_encode({after_touch,Chan, B, C}) ->
-    [?MIDI_EVENT_AFTERTOUCH bor (Chan band 16#f),
-     B band 16#7f, C band 16#7f];
+    <<?MIDI_EVENT_AFTERTOUCH:4,Chan:4, 0:1,B:7,0:1,C:7>>;
 event_encode({control_change,Chan,Control,Param}) ->
-    [?MIDI_EVENT_CONTROLCHANGE bor (Chan band 16#f),
-     control_encode(Control), Param band 16#7f];
+    <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
+      0:1,(control_encode(Control)):7, 0:1,Param:7>>;
 event_encode({pitch_bend,Chan,Bend}) ->
     Bend1 = Bend + 16#2000,
-    [?MIDI_EVENT_PITCHBEND bor (Chan band 16#f),
-     Bend1 band 16#7f, (Bend1 bsr 7) band 16#7f];
+    <<?MIDI_EVENT_PITCHBEND:4,Chan:4,
+      0:1,Bend1:7, 0:1,(Bend1 bsr 7):7>>;
 event_encode({program_change,Chan,Prog}) ->     
-    [?MIDI_EVENT_PROGRAMCHANGE bor (Chan band 16#f),
-     Prog band 16#7f];
+    <<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4,0:1,Prog:7>>;
 event_encode({pressure,Chan,Pressure}) ->     
-    [?MIDI_EVENT_PROGRAMCHANGE bor (Chan band 16#f),
-     Pressure band 16#7f];
+    <<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4,0:1,Pressure:7>>;
 event_encode({sysex,Params}) ->
-    [(?MIDI_EVENT_SYS bor 0) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 0:4, Bin/binary>>;
 event_encode({sys1,Params}) ->
-    [(?MIDI_EVENT_SYS bor 1) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 1:4, Bin/binary>>;
 event_encode({song_position_pointer,Params}) ->
-    [(?MIDI_EVENT_SYS bor 2) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 2:4, Bin/binary>>;
 event_encode({song_select,Params}) ->
-    [(?MIDI_EVENT_SYS bor 3) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 3:4, Bin/binary>>;
 event_encode({sys4,Params}) ->
-    [(?MIDI_EVENT_SYS bor 4) | Params];    
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 4:4, Bin/binary>>;
 event_encode({sys5,Params}) ->
-    [(?MIDI_EVENT_SYS bor 5) | Params];    
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 5:4, Bin/binary>>;
 event_encode({tune_request,Params}) ->
-    [(?MIDI_EVENT_SYS bor 6) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 6:4, Bin/binary>>;
 event_encode({eox,Params}) ->
-    [(?MIDI_EVENT_SYS bor 7) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 7:4, Bin/binary>>;
 event_encode({timing_clock,Params}) ->
-    [(?MIDI_EVENT_SYS bor 8) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 8:4, Bin/binary>>;
 event_encode({sys9,Params}) ->
-    [(?MIDI_EVENT_SYS bor 9) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 9:4, Bin/binary>>;
 event_encode({start,Params}) ->
-    [(?MIDI_EVENT_SYS bor 10) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 10:4, Bin/binary>>;
 event_encode({continue,Params}) ->
-    [(?MIDI_EVENT_SYS bor 11) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 11:4, Bin/binary>>;
 event_encode({stop,Params}) ->
-    [(?MIDI_EVENT_SYS bor 12) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 12:4, Bin/binary>>;
 event_encode({sys13,Params}) ->
-    [(?MIDI_EVENT_SYS bor 13) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 13:4, Bin/binary>>;
 event_encode({active_sensing,Params}) ->
-    [(?MIDI_EVENT_SYS bor 14) | Params];
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4, 14:4, Bin/binary>>;
 event_encode({meta,text,Text}) ->
     meta_encode(?MIDI_META_TEXT,Text);
 event_encode({meta,copyright,Text}) ->
@@ -253,54 +244,34 @@ event_encode({meta, Meta, Params}) when is_integer(Meta) ->
     meta_encode(Meta,Params).
 
 meta_encode(Meta, Params) ->
-    [(?MIDI_EVENT_SYS bor 15), Meta | length_encode(length(Params))] ++
-	Params.
+    LCode = length_encode(length(Params)),
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    <<?MIDI_EVENT_SYS:4,15:4,0:1,Meta:7,LCode/binary,Bin/binary>>.
 
-length_encode(L) when L =< 16#7f -> 
-    [L];
-length_encode(L) when L =< 16#3fff ->
-    [((L bsr 7) band 16#7f) bor 16#80,
-     (L band 16#7f)];
-length_encode(L) when L =< 16#1fffff ->
-    [((L bsr 14) band 16#7f) bor 16#80, 
-     ((L bsr 7) band 16#7f) bor 16#80,
-     (L band 16#7f)];
-length_encode(L) when L =< 16#fffffff ->
-    [((L bsr 21) band 16#7f) bor 16#80, 
-     ((L bsr 14) band 16#7f) bor 16#80, 
-     ((L bsr 7) band 16#7f) bor 16#80,
-     (L band 16#7f)].
+length_encode(L) when L >= 0, L =< 16#0fffffff ->
+    length_encode_(L).
 
--ifdef(not_yet).
-length_decode(<<0:1,L0:7>>) -> L0;
-length_decode(<<1:1,L1:7,0:1,L0:7>>) ->
-    (L1 bsl 7) + L0;
-length_decode(<<1:1,L2:7,1:1,L1:7,0:1,L0:7>>) ->
-    (L2 bsl 14) + (L1 bsl 7) + L0;
-length_decode(<<1:1,L3:7,1:1,L2:7,1:1,L1:7,0:1,L0:7>>) ->
-    (L3 bsl 21) + (L2 bsl 14) + (L1 bsl 7) + L0.
--endif.
+length_encode_(L) when L < 16#80 -> 
+    <<0:1,L:7>>;
+length_encode_(L) when L < 16#4000 ->
+    <<1:1,(L bsr 7):7,0:1,L:7>>;
+length_encode_(L) when L < 16#200000 ->
+    <<1:1,(L bsr 14):7,1:1,(L bsr 7):7,0:1,L:7>>;
+length_encode_(L) when L < 16#10000000 ->
+    <<1:1,(L bsr 21):7, 1:1,(L bsr 14):7,1:1,(L bsr 7):7, 0:1,L:7>>.
 
-
-length_decode([L0|Cs]) when L0 band 16#80 =:= 0 ->
-    {L0,Cs};
-length_decode([L0,L1|Cs]) when L0 band 16#80 =:= 16#80,
-			       L1 band 16#80 =:= 0 ->
-    {((L0 band 16#7f) bsl 7) bor L1, Cs};
-length_decode([L0,L1,L2|Cs]) when L0 band 16#80 =:= 16#80,
-				  L1 band 16#80 =:= 16#80,
-				  L2 band 16#80 =:= 0 ->
-    {((L0 band 16#7f) bsl 14) bor ((L1 band 16#7f) bsl 7) bor L2,Cs};
-length_decode([L0,L1,L2,L3|Cs]) when L0 band 16#80 =:= 16#80,
-				     L1 band 16#80 =:= 16#80,
-				     L2 band 16#80 =:= 16#80 ->
-    {((L0 band 16#7f) bsl 21) bor ((L1 band 16#7f) bsl 14) bor
-	 ((L2 band 16#7f) bsl 7) bor (L3 band 16#7f), Cs}.
-
+length_decode(<<0:1,L0:7>>) ->
+    L0;
+length_decode(<<1:1,L0:7,0:1,L1:7>>) ->
+    (L0 bsl 7) + L1;
+length_decode(<<1:1,L0:7,1:1,L1:7,0:1,L2:7>>) ->
+    (L0 bsl 14) + (L1 bsl 7) + L2;
+length_decode(<<1:1,L0:7,1:1,L1:7,1:1,L2:7,0:1,L3:7>>) ->
+    (L0 bsl 21) + (L1 bsl 14) + (L2 bsl 7) + L3.
 
 %% translate status and params into symbolic midi event form
 event_decode(Status,Params=[B,C]) ->
-    case Status band 16#F0 of
+    case Status bsr 4 of
 	?MIDI_EVENT_NOTEOFF ->
 	    {note_off,Status band 16#0F, B, C};
 	?MIDI_EVENT_NOTEON ->
@@ -315,7 +286,7 @@ event_decode(Status,Params=[B,C]) ->
 	    sys_decode(Status band 16#0F, Params)
     end;
 event_decode(Status,Params=[B]) ->
-    case Status band 16#F0 of
+    case Status bsr 4 of
 	?MIDI_EVENT_PROGRAMCHANGE ->
 	    {program_change,Status band 16#0F, B};
 	?MIDI_EVENT_PRESSURE ->
@@ -324,7 +295,7 @@ event_decode(Status,Params=[B]) ->
 	    sys_decode(Status band 16#0F, Params)
     end;
 event_decode(Status,Params) ->
-    case Status band 16#F0 of
+    case Status bsr 4 of
 	?MIDI_EVENT_SYS ->
 	    sys_decode(Status band 16#0F, Params)
     end.
