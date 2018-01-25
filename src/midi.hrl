@@ -46,11 +46,6 @@
 -define(MIDI_META_KEY_SIGNATURE,  16#59).  %% <<SF:8,MI:8>>
 -define(MIDI_META_PROPRIETARY,    16#7f).   %% text
 
--define(MIDI_CONTROL_CHANGE(C),(?MIDI_EVENT_CONTROLCHANGE bor ((C) band 16#F))).
--define(MIDI_PROGRAM_CHANGE(C),(?MIDI_EVENT_PROGRAMCHANGE bor ((C) band 16#F))).
--define(MIDI_NOTE_ON(C),        (?MIDI_EVENT_NOTEON bor ((C) band 16#F))).
--define(MIDI_NOTE_OFF(C),       (?MIDI_EVENT_NOTEOFF bor ((C) band 16#F))).
-
 -define(MIDI_CTRL_BANK_SELECT,       0).
 -define(MIDI_CTRL_MODULATION_WHEEL,  1).
 -define(MIDI_CTRL_BREATH_CONTROLLER, 2).

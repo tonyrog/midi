@@ -157,7 +157,7 @@ event_encode({pitch_bend,Chan,Bend}) ->
 event_encode({program_change,Chan,Prog}) ->     
     <<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4,0:1,Prog:7>>;
 event_encode({pressure,Chan,Pressure}) ->     
-    <<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4,0:1,Pressure:7>>;
+    <<?MIDI_EVENT_PRESSURE:4,Chan:4,0:1,Pressure:7>>;
 event_encode({sysex,Params}) ->
     Bin = << <<0:1,P:7>> || P <- Params >>,
     <<?MIDI_EVENT_SYS:4, 0:4, Bin/binary>>;

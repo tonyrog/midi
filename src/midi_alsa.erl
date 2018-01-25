@@ -74,14 +74,26 @@ dev_parse(["    "++Data|Lines],Client=#{ client := Cli},Node,Acc,DevMidi) ->
     dev_parse(Lines,Client,Node1,add_node(Node,Acc,DevMidi),DevMidi);
 
 dev_parse(["\tConnected From: "++String|Lines],Client,Node=#{input:=IN},Acc,DevMidi) ->
-    {ok,[{integer,_,Cli},{':',_},{integer,_,Con}],_} = erl_scan:string(String),
-    Node1 = Node#{ input => [{Cli,Con}|IN]},
-    dev_parse(Lines,Client,Node1,Acc,DevMidi);
+    case erl_scan:string(String) of
+	{ok,[{integer,_,Cli},{':',_},{integer,_,Con}],_} ->
+	    Node1 = Node#{ input => [{Cli,Con}|IN]},
+	    dev_parse(Lines,Client,Node1,Acc,DevMidi);
+	{ok,[{integer,_,Cli},{':',_},{integer,_,Con},
+	     {'[',_},{atom,_,real},{':',_},{integer,_,_Hw},{']',_}],_} ->
+	    Node1 = Node#{ input => [{Cli,Con}|IN]},
+	    dev_parse(Lines,Client,Node1,Acc,DevMidi)
+    end;
 
 dev_parse(["\tConnecting To: "++String|Lines],Client,Node=#{output:=OUT},Acc,DevMidi) ->
-    {ok,[{integer,_,Cli},{':',_},{integer,_,Con}],_} = erl_scan:string(String),
-    Node1 = Node#{ output => [{Cli,Con}|OUT]},
-    dev_parse(Lines,Client,Node1,Acc,DevMidi);
+    case erl_scan:string(String) of
+	{ok,[{integer,_,Cli},{':',_},{integer,_,Con}],_} ->
+	    Node1 = Node#{ output => [{Cli,Con}|OUT]},
+	    dev_parse(Lines,Client,Node1,Acc,DevMidi);
+	{ok,[{integer,_,Cli},{':',_},{integer,_,Con},
+	     {'[',_},{atom,_,real},{':',_},{integer,_,_Hw},{']',_}],_} ->
+	    Node1 = Node#{ output => [{Cli,Con}|OUT]},
+	    dev_parse(Lines,Client,Node1,Acc,DevMidi)
+    end;
 
 dev_parse([],_Client,Node,Acc,DevMidi) ->
     add_node(Node,Acc,DevMidi).

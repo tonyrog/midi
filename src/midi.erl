@@ -10,6 +10,7 @@
 -on_load(init/0).
 -export([close/1, read/1, write/2]).
 -export([note_on/4, note_off/4, note_off/3, 
+	 pitch_bend/3, pressure/3,
 	 control/4, volume/3, all_off/2, reset_all/2,
 	 bank/3, program_change/3]).
 -export([control_fine/4,
@@ -79,27 +80,39 @@ read_(_Fd) ->
     ?nif_stub().
 
 note_on(Synth, Chan, Note, Velocity) ->
-    write(Synth, <<?MIDI_NOTE_ON(Chan), Note, Velocity>>).
+    write(Synth, <<?MIDI_EVENT_NOTEON:4,Chan:4,0:1,Note:7,0:1,Velocity:7>>).
 
 %% note! using ?MIDI_NOTE_ON(Chan), Note, 0>> 
 %% may save a byte in the running status when stopping a chord
 note_off(Synth, Chan, Note) ->
-    write(Synth, <<?MIDI_NOTE_ON(Chan), Note, 0>>).
+    write(Synth, <<?MIDI_EVENT_NOTEON:4,Chan:4,0:1,Note:7,0>>).
 note_off(Synth, Chan, Note, Velocity) ->
-    write(Synth, <<?MIDI_NOTE_OFF(Chan), Note, Velocity>>).
+    write(Synth, <<?MIDI_EVENT_NOTEOFF:4,Chan:4,0:1,Note:7,
+		   0:1,Velocity:7>>).
 
 control(Synth, Chan, Control, Arg) ->
-    write(Synth, <<?MIDI_CONTROL_CHANGE(Chan), Control, Arg>>).
+    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
+		   0:1,Control:7, 0:1,Arg:7>>).
 
 control_fine(Synth, Chan, Control, Arg) ->
-    write(Synth, <<?MIDI_CONTROL_CHANGE(Chan), Control, (Arg bsr 8)>>),
-    write(Synth, <<?MIDI_CONTROL_CHANGE(Chan), (Control+1), Arg>>).
+    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
+		   0:1,Control:7, 0:1, (Arg bsr 7):7>>),
+    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
+		   0:1,(Control+1):7, Arg:7>>).
 
 volume(Synth, Chan, Volume) ->
     control(Synth, Chan, ?MIDI_CTRL_VOLUME, Volume).
 
 volume_fine(Synth, Chan, Volume) ->
     control_fine(Synth, Chan, ?MIDI_CTRL_VOLUME, Volume).
+
+pitch_bend(Synth, Chan, Bend) ->
+    Bend1 = Bend + 16#2000,
+    write(Synth, <<?MIDI_EVENT_PITCHBEND:4,Chan:4,
+		     0:1,Bend1:7, 0:1,(Bend1 bsr 7):7>>).
+
+pressure(Synth, Chan, Pressure) ->
+    write(Synth, <<?MIDI_EVENT_PRESSURE:4,Chan:4,0:1,Pressure:7>>).
 
 all_off(Synth, Chan) ->
     control(Synth, Chan, ?MIDI_CTRL_ALL_NOTES_OFF, 0).
@@ -114,7 +127,7 @@ bank_fine(Synth, Chan, Bank) ->
     control_fine(Synth, Chan, ?MIDI_CTRL_BANK_SELECT, Bank).
 
 program_change(Synth, Chan, Prog) ->
-    write(Synth, <<?MIDI_PROGRAM_CHANGE(Chan), Prog>>).
+    write(Synth, <<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4,0:1,Prog:7>>).
 
 %% 
 proxy(InputDevice, OutputDevice) ->
