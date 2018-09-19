@@ -19,6 +19,8 @@
 -export([chord_2nd/1, chord_2nd/2]).
 -export([chord/4]).
 
+-export([tracks/5]).
+
 -define(USEC_PER_MINUTE, 60000000).
 -define(DEFAULT_MPQN,    500000).
 
@@ -53,34 +55,8 @@ file(File, Device, BPM, Bank) ->
 			 {ok,Fd1} = midi:open(Device,[raw,list]), Fd1;
 		    is_reference(Device) -> Device
 		 end,
-	    midi:reset_all(Fd, 0),
-	    if Bank > 0 ->
-		    lists:foreach(
-		      fun(I) ->
-			      midi:bank(Fd, I, Bank)
-		      end, lists:seq(0, 15));
-	       true ->
-		    ok
-	    end,
-	    MPQN = ?USEC_PER_MINUTE/BPM,
-	    PPQN = if Division >= 0 -> Division; true -> 1.0 end,
-	    USPP =
-		if Division >= 0 ->
-			MPQN / PPQN;
-		   true ->
-			TicksPerFrame = Division band 16#ff,
-			FramesPerSec = 
-			    case Division bsr 8 of
-				-24 -> 24.0;
-				-25 -> 25.0;
-				-29 -> 29.97;
-				-30 -> 30.0
-			    end,
-			?DEFAULT_MPQN / (FramesPerSec*TicksPerFrame)
-		end,
-	    TParam = #tparam{mpqn=MPQN,ppqn=PPQN,bpm=BPM,uspp=USPP},
 	    Tracks1 = [T || {_TID,T} <- Tracks],
-	    play(Fd,Tracks1,TParam),
+	    tracks(Fd, Tracks1, BPM, Bank, Division),
 	    if is_atom(Fd) -> ok;  %% do not close "standard" synth
 	       Device =/= Fd -> midi:close(Fd);
 	       true -> ok
@@ -89,6 +65,33 @@ file(File, Device, BPM, Bank) ->
 	Error ->
 	    Error
     end.
+
+tracks(Fd, Tracks, BPM, Bank, Division) ->
+    midi:reset_all(Fd, 0),
+    if Bank > 0 ->
+	    lists:foreach(
+	      fun(I) -> midi:bank(Fd, I, Bank) end, lists:seq(0, 15));
+       true ->
+	    ok
+    end,
+    MPQN = ?USEC_PER_MINUTE/BPM,
+    PPQN = if Division >= 0 -> Division; true -> 1.0 end,
+    USPP =
+	if Division >= 0 ->
+		MPQN / PPQN;
+	   true ->
+		TicksPerFrame = Division band 16#ff,
+		FramesPerSec = 
+		    case Division bsr 8 of
+			-24 -> 24.0;
+			-25 -> 25.0;
+			-29 -> 29.97;
+			-30 -> 30.0
+		    end,
+		?DEFAULT_MPQN / (FramesPerSec*TicksPerFrame)
+	end,
+    TParam = #tparam{mpqn=MPQN,ppqn=PPQN,bpm=BPM,uspp=USPP},
+    play(Fd,Tracks,TParam).
 
 play(Fd,Trs,TParam) ->
     {Trs1,Ts1} = init(Trs,[],[],TParam),

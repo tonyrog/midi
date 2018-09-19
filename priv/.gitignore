@@ -1,4 +1,4 @@
-midi_drv.so
+midi_alsa.so
 abc/*
 mid/*
 abc/*

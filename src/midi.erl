@@ -21,6 +21,7 @@
 -export([setup_synth/0, open_synth/0]).
 -export([devices/0]).
 -export([find_device_by_port/2]).
+-export([find_device_by_name/2]).
 -export([find_synth_input_port/1]).
 
 -export([io_prog/1, input_prog/2]).
@@ -209,7 +210,7 @@ devices() ->
 
 open_synth() ->
     case setup_synth() of
-	{ok,#{ hw:=Device} } -> open(Device, [running]);
+	{ok,#{ device:=Device} } -> open(Device, [running]);
 	Error -> Error
     end.
 
@@ -252,6 +253,14 @@ find_device_by_port(Port, [D=#{port:=Port}|_Ds]) ->
 find_device_by_port(Port, [_|Ds]) ->
     find_device_by_port(Port, Ds);
 find_device_by_port(_Port, []) ->
+    false.
+
+%% Lookup Device given client name
+find_device_by_name(Name, [D=#{client_name:=Name}|_Ds]) ->
+    D;
+find_device_by_name(Name, [_|Ds]) ->
+    find_device_by_name(Name, Ds);
+find_device_by_name(_Name, []) ->
     false.
 
 %% Locate the synth input port
