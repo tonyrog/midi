@@ -24,7 +24,7 @@
 -define(USEC_PER_MINUTE, 60000000).
 -define(DEFAULT_MPQN,    500000).
 
--include("midi.hrl").
+-include("../include/midi.hrl").
 
 -define(format_record(T,R), format_record((R), record_info(fields,T))).
 	

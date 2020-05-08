@@ -16,14 +16,15 @@
 
 -compile(export_all).
 
--include("midi.hrl").
+-include("../include/midi.hrl").
 
 -define(is_digit(C),   (((C) >= $0) andalso ((C) =< $9))).
 
 play_file(File) ->
-    play(synth, File).
+    play_file(synth, File).
 
 play_file(Fd, File) ->
+    io:format("Fd = ~w\n", [Fd]),
     play_file(Fd, File, first, first).
 
 play_file(Fd, File, Index, Voice) ->
@@ -62,11 +63,18 @@ play(Fd, Ns) ->
     play(Fd, Ns, first, first).
 
 play(Fd, Ns, Index, Voice) ->
+    io:format("Fd = ~w\n", [Fd]),
+    io:format("Ns = ~w\n", [Ns]),
+    io:format("Index = ~w\n", [Index]),
+    io:format("Voice = ~w\n", [Voice]),
     midi:program_change(Fd, 0, ?GM_MIDI_Acoustic_Grand_Piano),
     midi:program_change(Fd, 1, ?GM_MIDI_Acoustic_Guitar_nylon),
     midi:program_change(Fd, 2, ?GM_MIDI_Acoustic_Bass),
     T = select_tune(Ns, Index),
+    io:format("tune = ~p\n", [T]),
     Ns1 = select_voice(T, Voice),
+    io:format("voice = ~p\n", [Ns1]),
+
     Ctx = #{ tempo => 120,
 	     unit_note_length => {1,4},
 	     voice => 0,

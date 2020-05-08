@@ -32,7 +32,7 @@
 -define(SYNTH, midi_fluid).
 -define(BACKEND, midi_alsa).
 
--include("midi.hrl").
+-include("../include/midi.hrl").
 
 -define(nif_stub(),
 	erlang:nif_error({nif_not_loaded,module,?MODULE,line,?LINE})).

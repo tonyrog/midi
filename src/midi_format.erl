@@ -5,7 +5,7 @@
 
 -compile(export_all).
 
--include("midi.hrl").
+-include("../include/midi.hrl").
 
 -define(HUGE, 16#ffffffff).
 -define(USEC_PER_MINUTE, 60000000).

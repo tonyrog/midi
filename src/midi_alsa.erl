@@ -58,21 +58,48 @@ devmidi() ->
       end, [], filelib:wildcard("/dev/midi*")).
 
 dev_parse(["client "++Data|Lines],_Client,Node,Acc,DevMidi) ->
-    {ok,[{integer,_,Cli},{':',_},
-	 {atom,_,Name},
-	 {'[',_},{atom,_,type},{'=',_},
-	 {atom,_,Type},{']',_}],_} = erl_scan:string(Data),
-    Name1 = string:trim(atom_to_list(Name)),
-    Client = #{ client => Cli, client_name => Name1, type => Type },
-    dev_parse(Lines,Client,undefined,add_node(Node,Acc,DevMidi),DevMidi);
-
+    case erl_scan:string(Data) of
+	{ok,[{integer,_,Cli},{':',_},
+	     {atom,_,Name},{'[',_},
+	     {atom,_,type},{'=',_},{atom,_,Type},
+	     {']',_}],_} ->
+	    Name1 = string:trim(atom_to_list(Name)),
+	    Client = #{ client => Cli, client_name => Name1, type => Type },
+	    dev_parse(Lines,Client,undefined,
+		      add_node(Node,Acc,DevMidi),DevMidi);
+	{ok,[{integer,_,Cli},{':',_},
+	     {atom,_,Name},
+	     {'[',_},
+	     {atom,_,type},{'=',_},{atom,_,Type},
+	     {',',_},
+	     {atom,_,pid},{'=',_},{integer,_,Pid},
+	     {']',_}],_} ->
+	    Name1 = string:trim(atom_to_list(Name)),
+	    Client = #{ client => Cli, client_name => Name1, type => Type, 
+			pid => Pid },
+	    dev_parse(Lines,Client,undefined,
+		      add_node(Node,Acc,DevMidi),DevMidi);
+	{ok,[{integer,_,Cli},{':',_},
+	     {atom,_,Name},
+	     {'[',_},
+	     {atom,_,type},{'=',_},{atom,_,Type},
+	     {',',_},
+	     {atom,_,card},{'=',_},{integer,_,Card},
+	     {']',_}],_} ->
+	    Name1 = string:trim(atom_to_list(Name)),
+	    Client = #{ client => Cli, client_name => Name1, type => Type, 
+			card => Card },
+	    dev_parse(Lines,Client,undefined,
+		      add_node(Node,Acc,DevMidi),DevMidi)
+    end;
 dev_parse(["    "++Data|Lines],Client=#{ client := Cli},Node,Acc,DevMidi) ->
-    {ok,[{integer,_,Con},{atom,_,ConName}],_} = erl_scan:string(Data),
-    Name1 = string:trim(atom_to_list(ConName)),
-    Node1 = Client#{ port => {Cli,Con}, port_name => Name1,
-		     input => [], output => []},
-    dev_parse(Lines,Client,Node1,add_node(Node,Acc,DevMidi),DevMidi);
-
+    case erl_scan:string(Data) of
+	{ok,[{integer,_,Con},{atom,_,ConName}],_} ->
+	    Name1 = string:trim(atom_to_list(ConName)),
+	    Node1 = Client#{ port => {Cli,Con}, port_name => Name1,
+			     input => [], output => []},
+	    dev_parse(Lines,Client,Node1,add_node(Node,Acc,DevMidi),DevMidi)
+    end;
 dev_parse(["\tConnected From: "++String|Lines],Client,Node=#{input:=IN},Acc,DevMidi) ->
     case erl_scan:string(String) of
 	{ok,[{integer,_,Cli},{':',_},{integer,_,Con}],_} ->
@@ -81,9 +108,13 @@ dev_parse(["\tConnected From: "++String|Lines],Client,Node=#{input:=IN},Acc,DevM
 	{ok,[{integer,_,Cli},{':',_},{integer,_,Con},
 	     {'[',_},{atom,_,real},{':',_},{integer,_,_Hw},{']',_}],_} ->
 	    Node1 = Node#{ input => [{Cli,Con}|IN]},
+	    dev_parse(Lines,Client,Node1,Acc,DevMidi);
+	{ok,[{integer,_,Cli1},{':',_},{integer,_,Con1},{',',_},
+	     {integer,_,Cli2},{':',_},{integer,_,Con2},
+	     {'[',_},{atom,_,real},{':',_},{integer,_,_Hw},{']',_}],_} ->
+	    Node1 = Node#{ input => [{Cli1,Con1},{Cli2,Con2}|IN]},
 	    dev_parse(Lines,Client,Node1,Acc,DevMidi)
     end;
-
 dev_parse(["\tConnecting To: "++String|Lines],Client,Node=#{output:=OUT},Acc,DevMidi) ->
     case erl_scan:string(String) of
 	{ok,[{integer,_,Cli},{':',_},{integer,_,Con}],_} ->

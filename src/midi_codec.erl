@@ -16,7 +16,7 @@
 -export([note_decode/1, note_encode/1]).
 -export([gm_midi_map/0, gm_drum_map/0]).
 
--include("midi.hrl").
+-include("../include/midi.hrl").
 
 init(Data) ->
     {status, Data, 0, 0, []}.
@@ -140,7 +140,6 @@ parse_delta(<<1:1,L0:7,1:1,L1:7,1:1,L2:7,0:1,L3:7,Data/binary>>,
 parse_delta([_L0,_L1,_L2,_L3|Cs],State,Status,Running,Params) ->
     {{error,bad_delta}, {State,Cs,Status,Running,Params}}.
 
-%% encode midi commans fixme binary?
 event_encode({note_off,Chan,Note,Velocity}) ->
     <<?MIDI_EVENT_NOTEOFF:4,Chan:4, 0:1, Note:7, 0:1, Velocity:7>>;
 event_encode({note_on,Chan,Note,Velocity}) ->

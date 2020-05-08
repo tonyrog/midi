@@ -18,6 +18,58 @@
 -define(a, 81).
 -define(b, 83).
 
+-record(note_on,
+	{
+	 chan :: 0..15,
+	 note :: 0..127,
+	 velocity :: 0..127  %% 0 = off!
+	}).
+
+-record(note_off,
+	{
+	 chan :: 0..15,
+	 note :: 0..127,
+	 velocity :: 0..127
+	}).
+
+-record(after_touch,
+	{
+	 char :: 0..15,
+	 note :: 0..127,
+	 value :: 0..127
+	}).
+
+-record(control_change,
+	{
+	 char :: 0..15,
+	 control :: 0..127,
+	 param :: 0..127
+	}).
+
+-record(pitch_bend,
+	{
+	 chan :: 0..15,
+	 bend :: -8192 .. 8191 %% signed 14-bit
+	}).
+
+-record(program_change,
+	{
+	 chan :: 0..15,
+	 prog :: 0..127
+	}).
+
+-record(pressure,
+	{
+	 chan :: 0..15,
+	 pressure :: 0..127
+	}).
+
+-record(meta,
+	{
+	 type :: atom(),
+	 data 
+	}).
+
 %% MIDI message types
 -define(MIDI_EVENT_NOTEOFF, 	  16#8).  %% channel 0-15 in lower nibble
 -define(MIDI_EVENT_NOTEON, 	  16#9).  %% channel 0-15 in lower nibble
