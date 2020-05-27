@@ -16,10 +16,12 @@
 -export([find_free_virtual_port/1]).
 
 name() -> %% backend name (to fluid synth)
-    "alsa".
+    Props = application:get_env(midi, midi_alsa, []),
+    proplists:get_value(name, Props, "alsa").
 
 audio_device() ->  %% audio device to used (fixme, card config?)
-    "hw:0".
+    Props = application:get_env(midi, midi_alsa, []),
+    proplists:get_value(audio_device, Props, "hw:0").
 
 connect(A, B) ->
     connect_("", A, B).

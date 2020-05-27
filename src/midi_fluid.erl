@@ -7,6 +7,7 @@
 
 -module(midi_fluid).
 
+-export([start/0]).
 -export([start/1, stop/1]).
 -export([find_port/1]).
 
@@ -32,9 +33,13 @@ sound_fonts() ->
 
 %% FIXME: match fluid with audio-driver and midi backend
 %% pass backend module as argument?
+start() ->
+    start(application:get_env(midi, fluid_backend, midi_none)).
+    
 start(Backend) ->
     Name = Backend:name(),
     Device  = Backend:audio_device(),
+    %% --server?
     Command = "fluidsynth --server "++
 	"--audio-driver="++Name++" "++
 	"-o audio."++Name++".device="++Device++" "++

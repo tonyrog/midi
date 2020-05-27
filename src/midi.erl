@@ -205,8 +205,11 @@ message_loop(Fd, CallBack, State) ->
 	    input_loop(Fd, CallBack, State)
     end.
 
+backend() ->
+    application:get_env(midi, fluid_backend, midi_none).
+
 devices() ->
-    ?BACKEND:devices().
+    (backend()):devices().
 
 open_synth() ->
     case setup_synth() of
@@ -216,11 +219,11 @@ open_synth() ->
 
 %% try start synth as server 
 setup_synth() ->
-    Ds = ?BACKEND:devices(),  %% fixme: backend
+    Ds = (backend()):devices(),  %% fixme: backend
     case ?SYNTH:find_port(Ds) of
 	false ->
-	    ?SYNTH:start(?BACKEND),
-	    Ds1 = ?BACKEND:devices(),
+	    ?SYNTH:start(backend()),
+	    Ds1 = (backend()):devices(),
 	    case ?SYNTH:find_port(Ds1) of
 		false -> {error, synth_not_started};
 		Synth -> setup_synth(Synth,Ds1)
@@ -236,12 +239,12 @@ setup_synth(Synth,Ds) ->
     end.
 
 setup_synth_input(Synth,Ds) ->
-    case ?BACKEND:find_free_virtual_port(Ds) of
+    case (backend()):find_free_virtual_port(Ds) of
 	false ->
 	    io:format("forgot to install the virmid? run setup.sh\n"),
 	    {error, no_ports_available};
 	Virt ->
-	    case ?BACKEND:connect(Virt, Synth) of
+	    case (backend()):connect(Virt, Synth) of
 		"" -> {ok,Virt};
 		Err -> {error,Err}
 	    end
