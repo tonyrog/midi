@@ -49,7 +49,7 @@ file(File, Device) ->
 
 file(File, Device, BPM, Bank) ->
     case midi_file:load(File) of
-	{ok,{1,_NumTracks,Division},Tracks} ->
+	{ok,{_I,_NumTracks,Division},Tracks} ->
 	    Fd = if Device =:= synth -> synth;
 		    is_list(Device) -> %% device name
 			 {ok,Fd1} = midi:open(Device,[raw,list]), Fd1;

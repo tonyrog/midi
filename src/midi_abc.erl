@@ -24,7 +24,6 @@ play_file(File) ->
     play_file(synth, File).
 
 play_file(Fd, File) ->
-    io:format("Fd = ~w\n", [Fd]),
     play_file(Fd, File, first, first).
 
 play_file(Fd, File, Index, Voice) ->
@@ -63,24 +62,19 @@ play(Fd, Ns) ->
     play(Fd, Ns, first, first).
 
 play(Fd, Ns, Index, Voice) ->
-    io:format("Fd = ~w\n", [Fd]),
-    io:format("Ns = ~w\n", [Ns]),
-    io:format("Index = ~w\n", [Index]),
-    io:format("Voice = ~w\n", [Voice]),
     midi:program_change(Fd, 0, ?GM_MIDI_Acoustic_Grand_Piano),
     midi:program_change(Fd, 1, ?GM_MIDI_Acoustic_Guitar_nylon),
     midi:program_change(Fd, 2, ?GM_MIDI_Acoustic_Bass),
     T = select_tune(Ns, Index),
-    io:format("tune = ~p\n", [T]),
     Ns1 = select_voice(T, Voice),
-    io:format("voice = ~p\n", [Ns1]),
-
     Ctx = #{ tempo => 120,
 	     unit_note_length => {1,4},
 	     voice => 0,
 	     channel => 0,
 	     program => 0
 	   },
+    io:format("tempo = ~w\n", [maps:get(tempo, Ctx)]),
+    io:format("unit_note_length = ~w\n", [maps:get(unit_note_length, Ctx)]),
     Signature = #{},
     play_notes(Fd,Ns1,Ctx,Signature,[],[]).
 
@@ -146,12 +140,21 @@ play_notes_(Fd, [{title,T}|Ns],Ctx,Sig,SP,RP) ->
     io:format("title: ~s\n", [T]),
     play_notes(Fd,Ns,Ctx,Sig,SP,RP);
 play_notes_(Fd, [{unit_note_length,A,B}|Ns],Ctx,Sig,SP,RP) ->
-    Ctx1 = Ctx#{ unit_note_length => {A,B} }, 
+    io:format("unit_note_length = ~w\n", [{A,B}]),
+    {A0,B0} = maps:get(unit_note_length, Ctx, {1,4}),
+    T0 = maps:get(tempo, Ctx, 120),
+    TempoFactor = (A0*B)/(B0*A),
+    Tempo = trunc(T0*TempoFactor),
+    io:format("tempo = ~w\n", [Tempo]),
+    Ctx1 = Ctx#{ unit_note_length => {A,B}, tempo => Tempo }, 
     play_notes(Fd,Ns,Ctx1,Sig,SP,RP);
 play_notes_(Fd, [{tempo,T}|Ns],Ctx,Sig,SP,RP) ->
-    Ctx1 = Ctx#{ tempo => T},
+    io:format("tempo = ~w\n", [T]),
+    Ctx1 = Ctx#{ tempo => T },
     play_notes(Fd,Ns,Ctx1,Sig,SP,RP);
 play_notes_(Fd, [{tempo,ULen,T}|Ns],Ctx,Sig,SP,RP) ->
+    io:format("tempo = ~w\n", [T]),
+    io:format("unit_note_length = ~w\n", [ULen]),
     Ctx1 = Ctx#{ tempo => T, unit_note_length => ULen },
     play_notes(Fd,Ns,Ctx1,Sig,SP,RP);
 play_notes_(Fd, [{midi,channel,Chan}|Ns],Ctx,Sig,SP,RP) ->
