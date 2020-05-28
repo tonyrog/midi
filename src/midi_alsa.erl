@@ -7,21 +7,11 @@
 
 -module(midi_alsa).
 
--export([name/0]).
--export([audio_device/0]).
 -export([devices/0]).
 -export([devmidi/0]).
 -export([connect/2]).
 -export([disconnect/2]).
 -export([find_free_virtual_port/1]).
-
-name() -> %% backend name (to fluid synth)
-    Props = application:get_env(midi, midi_alsa, []),
-    proplists:get_value(name, Props, "alsa").
-
-audio_device() ->  %% audio device to used (fixme, card config?)
-    Props = application:get_env(midi, midi_alsa, []),
-    proplists:get_value(audio_device, Props, "hw:0").
 
 connect(A, B) ->
     connect_("", A, B).
@@ -98,38 +88,74 @@ dev_parse(["    "++Data|Lines],Client=#{ client := Cli},Node,Acc,DevMidi) ->
     case erl_scan:string(Data) of
 	{ok,[{integer,_,Con},{atom,_,ConName}],_} ->
 	    Name1 = string:trim(atom_to_list(ConName)),
-	    Node1 = Client#{ port => {Cli,Con}, port_name => Name1,
+	    Node1 = Client#{ port => {Cli,Con}, 
+			     port_name => Name1,
 			     input => [], output => []},
 	    dev_parse(Lines,Client,Node1,add_node(Node,Acc,DevMidi),DevMidi)
     end;
 dev_parse(["\tConnected From: "++String|Lines],Client,Node=#{input:=IN},Acc,DevMidi) ->
     case erl_scan:string(String) of
-	{ok,[{integer,_,Cli},{':',_},{integer,_,Con}],_} ->
-	    Node1 = Node#{ input => [{Cli,Con}|IN]},
-	    dev_parse(Lines,Client,Node1,Acc,DevMidi);
-	{ok,[{integer,_,Cli},{':',_},{integer,_,Con},
-	     {'[',_},{atom,_,real},{':',_},{integer,_,_Hw},{']',_}],_} ->
-	    Node1 = Node#{ input => [{Cli,Con}|IN]},
-	    dev_parse(Lines,Client,Node1,Acc,DevMidi);
-	{ok,[{integer,_,Cli1},{':',_},{integer,_,Con1},{',',_},
-	     {integer,_,Cli2},{':',_},{integer,_,Con2},
-	     {'[',_},{atom,_,real},{':',_},{integer,_,_Hw},{']',_}],_} ->
-	    Node1 = Node#{ input => [{Cli1,Con1},{Cli2,Con2}|IN]},
+	{ok, Ts, _} ->
+	    IN1 = parse_connect_from(Ts, IN),
+	    Node1 = Node#{ input => IN1 },
 	    dev_parse(Lines,Client,Node1,Acc,DevMidi)
+%%	{ok,[{integer,_,Cli},{':',_},{integer,_,Con}],_} ->
+%%	    Node1 = Node#{ input => [{Cli,Con}|IN]},
+%%	    dev_parse(Lines,Client,Node1,Acc,DevMidi);
+%%	{ok,[{integer,_,Cli},{':',_},{integer,_,Con},
+%%	     {'[',_},{atom,_,real},{':',_},{integer,_,_Hw},{']',_}],_} ->
+%%	    Node1 = Node#{ input => [{Cli,Con}|IN]},
+%%	    dev_parse(Lines,Client,Node1,Acc,DevMidi);
+%%	{ok,[{integer,_,Cli1},{':',_},{integer,_,Con1},{',',_},
+%%	     {integer,_,Cli2},{':',_},{integer,_,Con2},
+%%	     {'[',_},{atom,_,real},{':',_},{integer,_,_Hw},{']',_}],_} ->
+%%	    Node1 = Node#{ input => [{Cli1,Con1},{Cli2,Con2}|IN]},
+%%	    dev_parse(Lines,Client,Node1,Acc,DevMidi)
     end;
 dev_parse(["\tConnecting To: "++String|Lines],Client,Node=#{output:=OUT},Acc,DevMidi) ->
     case erl_scan:string(String) of
-	{ok,[{integer,_,Cli},{':',_},{integer,_,Con}],_} ->
-	    Node1 = Node#{ output => [{Cli,Con}|OUT]},
-	    dev_parse(Lines,Client,Node1,Acc,DevMidi);
-	{ok,[{integer,_,Cli},{':',_},{integer,_,Con},
-	     {'[',_},{atom,_,real},{':',_},{integer,_,_Hw},{']',_}],_} ->
-	    Node1 = Node#{ output => [{Cli,Con}|OUT]},
+	{ok,Ts,_} ->
+	    OUT1 = parse_connecting_to(Ts, OUT),
+	    Node1 = Node#{ output => OUT1},
 	    dev_parse(Lines,Client,Node1,Acc,DevMidi)
+%%	{ok,[{integer,_,Cli},{':',_},{integer,_,Con}],_} ->
+%%	    Node1 = Node#{ output => [{Cli,Con}|OUT]},
+%%	    dev_parse(Lines,Client,Node1,Acc,DevMidi);
+%%	{ok,[{integer,_,Cli},{':',_},{integer,_,Con},
+%%	     {'[',_},{atom,_,real},{':',_},{integer,_,_Hw},{']',_}],_} ->
+%%	    Node1 = Node#{ output => [{Cli,Con}|OUT]},
+%%	    dev_parse(Lines,Client,Node1,Acc,DevMidi)
     end;
 
 dev_parse([],_Client,Node,Acc,DevMidi) ->
     add_node(Node,Acc,DevMidi).
+
+%% parse connections:  <cli>':'<con> [,<cli>':'<con>]* ['['real':'<hw>']']
+parse_connect_from([{integer,_,Cli},{':',_},{integer,_,Con}|Ts], Acc) ->
+    parse_connect_from(Ts, [{Cli,Con}|Acc]);
+parse_connect_from([{',',_}|Ts], Acc) ->
+    parse_connect_from(Ts, Acc);
+parse_connect_from([], Acc) ->
+    Acc;
+parse_connect_from([{'[',_},{atom,_,real},{':',_},
+		    {integer,_,_Hw},{']',_}], Acc) ->
+    Acc.
+
+%% parse: Connecting To:  <cli>':'<con> [,<cli>':'<con>]* ['['real':'<hw>']']
+parse_connecting_to([{integer,_,Cli},{':',_},{integer,_,Con}|Ts], Acc) ->
+    parse_connecting_to(Ts, [{Cli,Con}|Acc]);
+parse_connecting_to([{',',_}|Ts], Acc) ->
+    parse_connecting_to(Ts, Acc);
+parse_connecting_to([], Acc) ->
+    Acc;
+parse_connecting_to([{'[',_},{atom,_,real},{':',_},
+		     {integer,_,_Hw},{']',_}], Acc) ->
+    Acc.
+
+
+
+
+
 
 add_node(undefined,Acc,_DevMidi) -> Acc;
 add_node(Node,Acc,DevMidi) -> 

@@ -10,7 +10,7 @@
 -export([start/0, start/1]).
 -export([add/2, set/2, clear/1, stop/1]).
 
--export([lpk25/0]).
+-export([lpk25/0, vmpk/0]).
 
 -include("../include/midi.hrl").
 
@@ -43,6 +43,9 @@
 	 
 lpk25() ->
     start([{device,"LPK25"},{division,4}]).
+
+vmpk() ->
+    start([{device,"VMPK Output"},{division,4}]).
 
 start() -> 
     start([{division,4}]).
@@ -483,29 +486,57 @@ send(OUT, [E|Events]) ->
     ok = midi:write(OUT, Bytes),
     send(OUT, Events).
 
+%% A number of posibilities
+%% - device is device name, then it starts with a slash
+%% - it is a device with a device name that can be used directly
+%% - it is a virtual device already connected to a virtual midi
+%% - it is a virtual device that needs to be connected to a virtual midi
+%%   that we need to find and connect
 open_input(Opts) ->
     case maps:get(device, Opts, undefined) of
 	undefined -> undefined;
-	Name = "/"++_ ->
-	    case midi:open(Name,[event,list,running]) of
-		{ok,Fd} -> Fd;
-		{error,Reason} ->
-		    io:format("warnig: unable to open input ~p\n",
-			      [Reason]),
-		    undefined
-	    end;
+	DeviceName = "/"++_ ->
+	    open_device(DeviceName);
 	Name ->
-	    case midi:find_device_by_name(Name, midi:devices()) of
+	    Devices = midi:devices(),
+	    case midi:find_device_by_name(Name, Devices) of
 		false -> undefined;
-		#{device := Device } ->
-		    case midi:open(Device,[event,list,running]) of
-			{ok,Fd} -> Fd;
-			{error,Reason} ->
-			    io:format("warnig: unable to open input ~p\n",
-				      [Reason]),
-			    undefined
+		#{device := DeviceName } ->
+		    open_device(DeviceName);
+		#{output := [Port]} -> %% already connected
+		    case midi:find_device_by_port(Port, Devices) of
+			false ->
+			    {error, port_not_found};
+			#{device := DeviceName } ->
+			    open_device(DeviceName);
+			_Device -> %% go further?
+			    {error, device_not_found}
+		    end;
+		Device ->  %% program VMPK ...
+		    B = midi:backend(),
+		    case B:find_free_virtual_port(Devices) of
+			false ->
+			    io:format("forgot to install the virmid? run setup.sh\n"),
+			    {error, no_ports_available};
+			Virt = #{ device := DeviceName } ->
+			    case B:connect(Device, Virt) of
+				"" ->
+				    open_device(DeviceName);
+				Err -> 
+				    {error,Err}
+			    end
 		    end
 	    end
+    end.
+
+open_device(DeviceName) ->
+    case midi:open(DeviceName,
+		   [event,list,running]) of
+	{ok,Fd} -> Fd;
+	Error = {error,Reason} ->
+	    io:format("warnig: unable to open device ~s for input: ~p\n",
+		      [DeviceName, Reason]),
+	    Error
     end.
 
 time_us() ->

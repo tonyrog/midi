@@ -28,9 +28,7 @@
 -export([proxy/2]).
 %% nifs
 -export([open/2, close_/1, read_/1, write_/2]).
-
--define(SYNTH, midi_fluid).
--define(BACKEND, midi_alsa).
+-export([backend/0, synth/0]).
 
 -include("../include/midi.hrl").
 
@@ -42,10 +40,15 @@ init() ->
     erlang:load_nif(Nif, 0).
 
 start() ->
-    application:ensure_all_started(midi).
+    case os:cmd("lsmod | grep snd_virmidi") of
+	[] ->
+	    error(no_snd_virmidi);
+	_ ->
+	    application:ensure_all_started(midi)
+    end.
 
 start([File]) when is_atom(File) ->
-    application:ensure_all_started(midi),    
+    application:ensure_all_started(midi),
     midi_play:file(atom_to_list(File)).
 
 stop() ->
@@ -205,8 +208,11 @@ message_loop(Fd, CallBack, State) ->
 	    input_loop(Fd, CallBack, State)
     end.
 
+synth() ->
+    application:get_env(midi, midi_synth, midi_none).
+
 backend() ->
-    application:get_env(midi, fluid_backend, midi_none).
+    application:get_env(midi, midi_backend, midi_alsa).
 
 devices() ->
     (backend()):devices().
@@ -219,12 +225,14 @@ open_synth() ->
 
 %% try start synth as server 
 setup_synth() ->
-    Ds = (backend()):devices(),  %% fixme: backend
-    case ?SYNTH:find_port(Ds) of
+    B = backend(),
+    S = synth(),
+    Ds = B:devices(),  %% fixme: backend
+    case S:find_port(Ds) of
 	false ->
-	    ?SYNTH:start(backend()),
-	    Ds1 = (backend()):devices(),
-	    case ?SYNTH:find_port(Ds1) of
+	    S:start(),
+	    Ds1 = B:devices(),
+	    case S:find_port(Ds1) of
 		false -> {error, synth_not_started};
 		Synth -> setup_synth(Synth,Ds1)
 	    end;
@@ -239,12 +247,13 @@ setup_synth(Synth,Ds) ->
     end.
 
 setup_synth_input(Synth,Ds) ->
-    case (backend()):find_free_virtual_port(Ds) of
+    B = backend(),
+    case B:find_free_virtual_port(Ds) of
 	false ->
 	    io:format("forgot to install the virmid? run setup.sh\n"),
 	    {error, no_ports_available};
 	Virt ->
-	    case (backend()):connect(Virt, Synth) of
+	    case B:connect(Virt, Synth) of
 		"" -> {ok,Virt};
 		Err -> {error,Err}
 	    end
@@ -268,7 +277,8 @@ find_device_by_name(_Name, []) ->
 
 %% Locate the synth input port
 find_synth_input_port(Ds) ->
-    case ?SYNTH:find_port(Ds) of
+    S = synth(),
+    case S:find_port(Ds) of
 	false -> false;
 	Synth -> find_input_port(maps:get(port,Synth),Ds)
     end.
