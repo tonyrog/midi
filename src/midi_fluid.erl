@@ -11,26 +11,29 @@
 -export([stop/1]).
 -export([find_port/1]).
 
+-define(dbg(F,A), ok).
+%% -define(dbg(F,A), io:format((F),(A))).
+
 -define(DEFAULT_SOUND_FONTS,
 	["/usr/share/sounds/sf2/FluidR3_GM.sf2",
 	 "/usr/share/sounds/sf2/FluidR3_GS.sf2"]).
-%% -p | --portname 
--define(DEFAULT_PORTNAME, "FLUID Synth").
-%% -a | --audio-driver
+%% -p | --portname | -o midi.portname
+-define(DEFAULT_PORTNAME, "FLUID").  %% do not add space!!!
+%% -a | --audio-driver | -o audio.driver
 -define(DEFAULT_AUDIO, "alsa").
-%% -m | --midi-driver
+%% -m | --midi-driver | -o midi.driver
 -define(DEFAULT_MIDI,  "alsa_seq").
-%% -g | --gain
+%% -g | --gain | -o synth.gain
 -define(DEFAULT_GAIN,  0.2).
-%% -K | --midi-channels
+%% -K | --midi-channels | -o synth.midi-channels
 -define(DEFAULT_MIDI_CHANNELS, 16).
-%% -L | --audio-channels
+%% -L | --audio-channels | -o synth.audio-channels
 -define(DEFAULT_AUDIO_CHANNELS, 1).
-%% -C | --chorus
+%% -C | --chorus | -o synth.chorus.active
 -define(DEFAULT_CHORUS,  0).
 
-%% Other
--define(DEFAULT_PERIOD_SIZE, 64).  %% to small without real time!
+%% Other -o audio.period-size  (default 64, range 64-8192)
+-define(DEFAULT_PERIOD_SIZE, 128).  %% 64 to small without real time!
 
 
 %% Other options
@@ -112,29 +115,29 @@ start() ->
 		 " -o audio.",Audio,".device=",AudioDevice,
 		 " -o audio.period-size=",PeriodSize,
 		 " ", sound_fonts()]),
-    io:format("command: ~s\n", [Command]),
+    ?dbg("command: ~s\n", [Command]),
     Pid = spawn(
 	    fun() ->
 		    Port = open_port({spawn,Command},
 				     [eof,exit_status,stderr_to_stdout]),
 		    port_loop(Port)
 	    end),
-    timer:sleep(3000), %% allow device to be created
+    timer:sleep(3000), %% allow devices to be created
     Pid.
 
 port_loop(Port) ->
     receive
 	{Port,eof} ->
-	    io:format("port_loop: fluidsynth closed\n", []),
+	    ?dbg("port_loop: fluidsynth closed\n", []),
 	    ok;
-	{Port,{data,Info}} -> %% print info from fluid synth
-	    io:format("port_loop: ~s", [tr(Info,$\n,"\r\n")]),
+	{Port,{data,_Info}} -> %% print info from fluid synth
+	    ?dbg("port_loop: ~s", [tr(_Info,$\n,"\r\n")]),
 	    port_loop(Port);
-	{Port,What} ->
-	    io:format("port_loop: got ~p\n", [What]),
+	{Port,_What} ->
+	    ?dbg("port_loop: got ~p\n", [_What]),
 	    port_loop(Port);
 	stop ->
-	    io:format("port_loop: fluidsynth stopping\n", []),
+	    ?dbg("port_loop: fluidsynth stopping\n", []),
 	    erlang:port_close(Port),
 	    ok
     end.

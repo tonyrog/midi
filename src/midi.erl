@@ -30,6 +30,9 @@
 -export([open/2, close_/1, read_/1, write_/2]).
 -export([backend/0, synth/0]).
 
+-define(DEFAULT_MIDI_SYNTH, midi_fluid).
+-define(DEFAULT_MIDI_BACKEND, midi_alsa).
+
 -include("../include/midi.hrl").
 
 -define(nif_stub(),
@@ -48,8 +51,14 @@ start() ->
     end.
 
 start([File]) when is_atom(File) ->
-    application:ensure_all_started(midi),
-    midi_play:file(atom_to_list(File)).
+    start(),
+    Filename = atom_to_list(File),
+    case filename:extension(Filename) of
+	".mid" ->
+	    midi_play:file(Filename);
+	".abc" ->
+	    midi_abc:play_file(Filename)
+    end.
 
 stop() ->
     application:stop(midi).
@@ -209,10 +218,10 @@ message_loop(Fd, CallBack, State) ->
     end.
 
 synth() ->
-    application:get_env(midi, midi_synth, midi_none).
+    application:get_env(midi, midi_synth, ?DEFAULT_MIDI_SYNTH).
 
 backend() ->
-    application:get_env(midi, midi_backend, midi_alsa).
+    application:get_env(midi, midi_backend, ?DEFAULT_MIDI_BACKEND).
 
 devices() ->
     (backend()):devices().
