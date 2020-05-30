@@ -11,11 +11,16 @@
 -export([close/1, read/1, write/2]).
 -export([note_on/4, note_off/4, note_off/3, 
 	 pitch_bend/3, pressure/3,
-	 control/4, volume/3, all_off/2, reset_all/2,
-	 bank/3, program_change/3]).
--export([control_fine/4,
-	 volume_fine/3,
-	 bank_fine/3]).
+	 all_off/2, reset_all/2,
+	 program_change/3]).
+-export([pan/3, pan2/3]).
+-export([bank/3, bank2/3]).
+-export([volume/3, volume2/3]).
+-export([control7/4, control14/5]).
+-export([surround_LR/3, surround_LR2/3]).
+-export([surround_FB/3, surround_FB2/3]).
+-export([surround_ambience/3, surround_ambience2/3]).
+-export([expression/3, expression2/3]).
 
 -export([start/0, start/1, stop/0]).
 -export([setup_synth/0, open_synth/0]).
@@ -112,24 +117,33 @@ note_off(Synth, Chan, Note, Velocity) ->
     write(Synth, <<?MIDI_EVENT_NOTEOFF:4,Chan:4,0:1,Note:7,
 		   0:1,Velocity:7>>).
 
-control(Synth, Chan, Control, Arg) ->
-    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
-		   0:1,Control:7, 0:1,Arg:7>>).
-
-control_fine(Synth, Chan, Control, Arg) ->
-    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
-		   0:1,Control:7, 0:1, (Arg bsr 7):7>>),
-    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
-		   0:1,(Control+1):7, Arg:7>>).
-
 volume(Synth, Chan, Volume) ->
-    control(Synth, Chan, ?MIDI_CTRL_VOLUME, Volume).
+    control7(Synth, Chan, 
+	     ?MIDI_CTRL_VOLUME,
+	     unsigned7(Volume)).
 
-volume_fine(Synth, Chan, Volume) ->
-    control_fine(Synth, Chan, ?MIDI_CTRL_VOLUME, Volume).
+volume2(Synth, Chan, Volume) ->
+    control14(Synth,Chan,
+	      ?MIDI_CTRL_VOLUME,?MIDI_CTRL_VOLUME_FINE,
+	      unsigned14(Volume)).
+
+pan(Synth, Chan, Pan) ->
+    Value7 = signed7(Pan),
+    io:format("pan=~w\n", [Value7]),
+    control7(Synth, Chan, 
+	     ?MIDI_CTRL_PAN_POSITION, 
+	     Value7).
+
+pan2(Synth, Chan, Pan) ->
+    Value14 = signed14(Pan),
+    io:format("pan=~w\n", [Value14]),
+    control14(Synth,Chan,
+	      ?MIDI_CTRL_PAN_POSITION,
+	      ?MIDI_CTRL_PAN_POSITION_FINE,
+	      Value14).
 
 pitch_bend(Synth, Chan, Bend) ->
-    Bend1 = Bend + 16#2000,
+    Bend1 = signed14(Bend),
     write(Synth, <<?MIDI_EVENT_PITCHBEND:4,Chan:4,
 		     0:1,Bend1:7, 0:1,(Bend1 bsr 7):7>>).
 
@@ -137,16 +151,99 @@ pressure(Synth, Chan, Pressure) ->
     write(Synth, <<?MIDI_EVENT_PRESSURE:4,Chan:4,0:1,Pressure:7>>).
 
 all_off(Synth, Chan) ->
-    control(Synth, Chan, ?MIDI_CTRL_ALL_NOTES_OFF, 0).
+    control7(Synth, Chan, ?MIDI_CTRL_ALL_NOTES_OFF, 0).
 
 reset_all(Synth, Chan) ->
-    control(Synth, Chan, ?MIDI_CTRL_ALL_CONTROLLERS_OFF, 0).
+    control7(Synth, Chan, ?MIDI_CTRL_ALL_CONTROLLERS_OFF, 0).
 
-bank(Synth, Chan, Bank) ->
-    control(Synth, Chan, ?MIDI_CTRL_BANK_SELECT, Bank).
+bank(Synth, Chan, Bank) when is_integer(Bank), Bank >=0 ->
+    control7(Synth, Chan, 
+	     ?MIDI_CTRL_BANK_SELECT,
+	     Bank).
 
-bank_fine(Synth, Chan, Bank) ->
-    control_fine(Synth, Chan, ?MIDI_CTRL_BANK_SELECT, Bank).
+bank2(Synth, Chan, Bank) when is_integer(Bank), Bank >= 0 ->
+    control14(Synth, Chan, 
+	      ?MIDI_CTRL_BANK_SELECT,
+	      ?MIDI_CTRL_BANK_SELECT_FINE, 
+	      Bank).
+
+
+
+surround_LR(Synth, Chan, Value) ->
+    control7(Synth, Chan,
+	     ?MIDI_CTRL_INTEGRA_7_LEFT_RIGHT, 
+	     signed7(Value)).
+
+surround_LR2(Synth, Chan, Value) ->
+    control14(Synth, Chan,
+	      ?MIDI_CTRL_INTEGRA_7_LEFT_RIGHT,
+	      ?MIDI_CTRL_INTEGRA_7_LEFT_RIGHT_FINE, 
+	      signed14(Value)).
+
+surround_FB(Synth, Chan, Value) ->
+    control7(Synth, Chan,
+	     ?MIDI_CTRL_INTEGRA_7_FRONT_BACK, 
+	     signed7(Value)).
+
+surround_FB2(Synth, Chan, Value) ->
+    control14(Synth, Chan,
+	      ?MIDI_CTRL_INTEGRA_7_FRONT_BACK,
+	      ?MIDI_CTRL_INTEGRA_7_FRONT_BACK_FINE,
+	      signed14(Value)).
+
+surround_ambience(Synth, Chan, Value) ->
+    control7(Synth, Chan,
+	     ?MIDI_CTRL_INTEGRA_7_AMBIENCE, 
+	     signed7(Value)).
+
+surround_ambience2(Synth, Chan, Value) ->
+    control14(Synth, Chan,
+	      ?MIDI_CTRL_INTEGRA_7_AMBIENCE,
+	      ?MIDI_CTRL_INTEGRA_7_AMBIENCE_FINE,
+	      signed14(Value)).
+
+expression(Synth, Chan, Value) ->
+    control7(Synth, Chan, 
+	     ?MIDI_CTRL_EXPRESSION,
+	     unsigned7(Value)).
+
+expression2(Synth, Chan, Value) ->
+    control14(Synth, Chan, 
+	      ?MIDI_CTRL_EXPRESSION,
+	      ?MIDI_CTRL_EXPRESSION_FINE,
+	      unsigned14(Value)).
+
+signed7(Value) when is_integer(Value) ->
+    (Value+16#40) band 16#7f;
+signed7(Value) when is_float(Value), abs(Value) =< 1.0 ->
+    trunc((Value+1.0)*16#3f) band 16#7f.
+
+unsigned7(Value) when is_integer(Value), Value >= 0 ->
+    Value band 16#7f;
+unsigned7(Value) when is_float(Value), Value >= 0, Value =< 1.0 ->
+    trunc(Value * 16#7f) band 16#7f.
+
+signed14(Value) when is_integer(Value) ->
+    (Value+16#2000) band 16#3fff;
+signed14(Value) when is_float(Value), abs(Value) =< 1.0 ->
+    trunc((Value+1.0)*16#1fff) band 16#3fff.
+
+unsigned14(Value) when is_integer(Value), Value >= 0 ->
+    Value band 16#3fff;
+unsigned14(Value) when is_float(Value), Value >= 0, Value =< 1.0 ->
+    trunc((Value*16#1fff) + 16#2000) band 16#3fff.
+
+
+control7(Synth, Chan, Control, Arg) ->
+    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
+		   0:1,Control:7, 0:1,Arg:7>>).
+
+control14(Synth, Chan, Control, ControlFine, Arg) ->
+    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
+		   0:1,Control:7, 0:1, (Arg bsr 7):7>>),
+    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
+		   0:1,ControlFine:7, 0:1, Arg:7>>).
+
 
 program_change(Synth, Chan, Prog) ->
     write(Synth, <<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4,0:1,Prog:7>>).

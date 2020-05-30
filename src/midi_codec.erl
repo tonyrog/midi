@@ -617,7 +617,7 @@ gm_drum_map() ->
        ?ITEM(?GM_DRUM_Mute_Triangle, "Mute_Triangle"),
        ?ITEM(?GM_DRUM_Open_Triangle, "Open_Triangle")
      }.
-    
+
 control_decode(Control) when is_integer(Control) ->
     case maps:find(Control, control_map()) of
 	{ok,Value} -> Value;
@@ -662,3 +662,4 @@ note_encode([$G,$#,I]) when I>=$0, I=<$9 -> 12*(I-$0+1)+8;
 note_encode([$A,I]) when I>=$0, I=<$9 -> 12*(I-$0+1)+9;
 note_encode([$A,$#,I]) when I>=$0, I=<$9 -> 12*(I-$0+1)+10;
 note_encode([$B,I]) when I>=$0, I=<$9 -> 12*(I-$0+1)+11.
+

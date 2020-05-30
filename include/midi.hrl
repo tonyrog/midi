@@ -106,7 +106,7 @@
 -define(MIDI_CTRL_DATA_ENTRY,        6).
 -define(MIDI_CTRL_VOLUME,            7).
 -define(MIDI_CTRL_BALANCE,           8).
--define(MIDI_CTRL_PAN_POSITION,      10).
+-define(MIDI_CTRL_PAN_POSITION,      10).   %% MSB
 -define(MIDI_CTRL_EXPRESSION,        11).
 -define(MIDI_CTRL_EFFECT_CONTROL_1,  12).
 -define(MIDI_CTRL_EFFECT_CONTROL_2,  13).
@@ -122,7 +122,7 @@
 -define(MIDI_CTRL_DATA_ENTRY_FINE,          (32+6)).
 -define(MIDI_CTRL_VOLUME_FINE,              (32+7)).
 -define(MIDI_CTRL_BALANCE_FINE,             (32+8) ).
--define(MIDI_CTRL_PAN_POSITION_FINE,        (32+10)).
+-define(MIDI_CTRL_PAN_POSITION_FINE,        (32+10)).  %% LSB
 -define(MIDI_CTRL_EXPRESSION_FINE,          (32+11)).
 -define(MIDI_CTRL_EFFECT_CONTROL_1_FINE,    (32+12)).
 -define(MIDI_CTRL_EFFECT_CONTROL_2_FINE,    (32+13)).
@@ -166,7 +166,13 @@
 -define(MIDI_CTRL_MONO_OPERATION,           126).
 -define(MIDI_CTRL_POLY_OPERATION,           127).
 
-
+%% INTEGRA-7 definitions
+-define(MIDI_CTRL_INTEGRA_7_LEFT_RIGHT,  12).  %% INTEGRA-7 L-R
+-define(MIDI_CTRL_INTEGRA_7_FRONT_BACK,  13).  %% INTEGRA-7 F-B
+-define(MIDI_CTRL_INTEGRA_7_AMBIENCE,    14).  %% INTEGRA-7 Ambience
+-define(MIDI_CTRL_INTEGRA_7_LEFT_RIGHT_FINE,  28).  %% INTEGRA-7 L-R
+-define(MIDI_CTRL_INTEGRA_7_FRONT_BACK_FINE,  29).  %% INTEGRA-7 F-B
+-define(MIDI_CTRL_INTEGRA_7_AMBIENCE_FINE,    30).  %% INTEGRA-7 Ambience
 
 %% General midi instruments Piano:
 -define(GM_MIDI_Acoustic_Grand_Piano,  0).
