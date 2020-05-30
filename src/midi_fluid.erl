@@ -9,7 +9,7 @@
 
 -export([start/0]).
 -export([stop/1]).
--export([find_port/1]).
+-export([portname/0]).
 
 -define(dbg(F,A), ok).
 %% -define(dbg(F,A), io:format((F),(A))).
@@ -54,6 +54,9 @@ getenv(Name, Default) ->
 	    end
     end.
 
+portname() ->
+    getenv(portname, ?DEFAULT_PORTNAME).
+
 is_string([C|Cs]) when is_integer(C), C >= 0, C =< 255 ->
     is_string(Cs);
 is_string([]) ->
@@ -65,22 +68,7 @@ need_quote([C|_]) when is_integer(C), C < 33 -> true;
 need_quote([C|_]) when is_integer(C), C > 126 -> true;
 need_quote([_|Cs]) -> need_quote(Cs);
 need_quote([]) -> false.
-
-%% find fluid synth port (device)
-find_port(Devices) ->
-    PortName = getenv(portname, ?DEFAULT_PORTNAME),
-    find_port(PortName, Devices).
     
-find_port(PortName, [D=#{client_name := ClientName}|Ds]) ->
-    case lists:prefix(PortName, ClientName) of
-	true ->
-	    D;
-	false ->
-	    find_port(PortName, Ds)
-    end;
-find_port(PortName, [_|Ds]) -> find_port(PortName, Ds);
-find_port(_PortName, []) -> false.
-
 stop(Pid) ->
     Pid ! stop.
 

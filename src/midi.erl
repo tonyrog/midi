@@ -20,6 +20,7 @@
 -export([start/0, start/1, stop/0]).
 -export([setup_synth/0, open_synth/0]).
 -export([devices/0]).
+-export([find_synth_device/2]).
 -export([find_device_by_port/2]).
 -export([find_device_by_name/2]).
 -export([find_synth_input_port/1]).
@@ -29,6 +30,9 @@
 %% nifs
 -export([open/2, close_/1, read_/1, write_/2]).
 -export([backend/0, synth/0]).
+
+%% util
+-export([play_file/1]).
 
 -define(DEFAULT_MIDI_SYNTH, midi_fluid).
 -define(DEFAULT_MIDI_BACKEND, midi_alsa).
@@ -52,13 +56,18 @@ start() ->
 
 start([File]) when is_atom(File) ->
     start(),
-    Filename = atom_to_list(File),
+    play_file(File).
+
+play_file(Filename) when is_atom(Filename) ->
+    play_file(atom_to_list(Filename));
+play_file(Filename) when is_list(Filename) ->    
     case filename:extension(Filename) of
 	".mid" ->
 	    midi_play:file(Filename);
 	".abc" ->
 	    midi_abc:play_file(Filename)
-    end.
+    end.    
+
 
 stop() ->
     application:stop(midi).
@@ -236,12 +245,13 @@ open_synth() ->
 setup_synth() ->
     B = backend(),
     S = synth(),
-    Ds = B:devices(),  %% fixme: backend
-    case S:find_port(Ds) of
+    Ds = B:devices(),
+    case find_synth_device(S, Ds) of
 	false ->
-	    S:start(),
+	    start_synth(S),
 	    Ds1 = B:devices(),
-	    case S:find_port(Ds1) of
+	    %% retry lookup
+	    case find_synth_device(S, Ds1) of
 		false -> {error, synth_not_started};
 		Synth -> setup_synth(Synth,Ds1)
 	    end;
@@ -268,6 +278,19 @@ setup_synth_input(Synth,Ds) ->
 	    end
     end.
 
+
+start_synth(S) when is_atom(S) ->
+    S:start();
+start_synth(Name) when is_list(Name) ->
+    undefined.
+
+find_synth_device(S, Ds) when is_atom(S) ->
+    Name = S:portname(),
+    find_device_by_name(Name, Ds);
+find_synth_device(Name, Ds) when is_list(Name) ->
+    find_device_by_name(Name, Ds).
+
+
 %% Lookup Device given a port 
 find_device_by_port(Port, [D=#{port:=Port}|_Ds]) ->
     D;
@@ -276,18 +299,19 @@ find_device_by_port(Port, [_|Ds]) ->
 find_device_by_port(_Port, []) ->
     false.
 
-%% Lookup Device given client name
-find_device_by_name(Name, [D=#{client_name:=Name}|_Ds]) ->
-    D;
-find_device_by_name(Name, [_|Ds]) ->
-    find_device_by_name(Name, Ds);
+%% Lookup Device given client name (actually by prefix)
+find_device_by_name(Name, [D=#{client_name:=ClientName}|Ds]) ->
+    case lists:prefix(Name, ClientName) of
+	true -> D;
+	false -> find_device_by_name(Name, Ds)
+    end;
 find_device_by_name(_Name, []) ->
     false.
 
 %% Locate the synth input port
 find_synth_input_port(Ds) ->
     S = synth(),
-    case S:find_port(Ds) of
+    case find_synth_device(S, Ds) of
 	false -> false;
 	Synth -> find_input_port(maps:get(port,Synth),Ds)
     end.
