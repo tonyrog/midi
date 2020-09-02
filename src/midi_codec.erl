@@ -10,6 +10,7 @@
 -export([init/1, scan/1, scan/2]).
 -export([scan_delta/1]).
 -export([event_decode/2, event_encode/1]).
+-export([events_encode/1]).
 -export([control_decode/1, control_encode/1]).
 -export([meta_decode/1, meta_encode/2]).
 -export([length_decode/1, length_encode/1]).
@@ -139,6 +140,46 @@ parse_delta(<<1:1,L0:7,1:1,L1:7,1:1,L2:7,0:1,L3:7,Data/binary>>,
     {{ok,Len}, {State,Data,Status,Running,Params}};
 parse_delta([_L0,_L1,_L2,_L3|Cs],State,Status,Running,Params) ->
     {{error,bad_delta}, {State,Cs,Status,Running,Params}}.
+
+
+events_encode([E|Es]) ->
+    events_encode(E, Es, <<>>);
+events_encode([]) ->
+    <<>>.
+
+events_encode({note_off,Chan,Note,Velocity},Es,Data) ->
+    events_encode_(note_offs,Chan,Es,
+		  <<Data/binary,?MIDI_EVENT_NOTEOFF:4,Chan:4,
+		    0:1,Note:7,0:1,Velocity:7>>);
+events_encode({note_on,Chan,Note,Velocity},Es,Data) ->
+    events_encode_(note_on,Chan,Es,
+		  <<Data/binary,
+		    ?MIDI_EVENT_NOTEON:4,Chan:4,
+		    0:1,Note:7,0:1,Velocity:7>>);
+events_encode({after_touch,Chan,B,C},Es,Data) ->
+    events_encode_(after_touch,Chan,Es,
+		  <<Data/binary,
+		    ?MIDI_EVENT_AFTERTOUCH:4,Chan:4,
+		    0:1,B:7,0:1,C:7>>);
+events_encode({control_change,Chan,Control,Param},Es,Data) ->
+    events_encode_(control_change,Chan,Es,
+		   <<Data/binary,
+		     ?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
+		     0:1,(control_encode(Control)):7, 0:1,Param:7>>);
+events_encode(E, [E1|Es], Data) ->
+    events_encode(E1,Es,<<(event_encode(E))/binary,Data/binary>>);
+events_encode(E, [], Data) ->
+    <<(event_encode(E))/binary,Data/binary>>.
+    
+events_encode_(Status,Chan,[{Status,Chan,B,C}|Es],Data) ->
+    events_encode_(Status,Chan,Es,<<Data/binary,0:1,B:7,0:1,C:7>>);
+%% special case note_off = note_on vel=0
+events_encode_(note_on,Chan,[{note_off,Chan,B,_C}|Es],Data) ->
+    events_encode_(note_on,Chan,Es,<<Data/binary,0:1,B:7,0:1,0:7>>);
+events_encode_(_Status,_Chan,[E|Es],Data) ->
+    events_encode(E, Es, Data);
+events_encode_(_Status,_Chan,[],Data) ->
+    Data.
 
 event_encode({note_off,Chan,Note,Velocity}) ->
     <<?MIDI_EVENT_NOTEOFF:4,Chan:4, 0:1, Note:7, 0:1, Velocity:7>>;

@@ -17,9 +17,7 @@
 -export([bank/3, bank2/3]).
 -export([volume/3, volume2/3]).
 -export([control7/4, control14/5]).
--export([surround_LR/3, surround_LR2/3]).
--export([surround_FB/3, surround_FB2/3]).
--export([surround_ambience/3, surround_ambience2/3]).
+
 -export([expression/3, expression2/3]).
 
 -export([start/0, start/1, stop/0]).
@@ -169,38 +167,6 @@ bank2(Synth, Chan, Bank) when is_integer(Bank), Bank >= 0 ->
 
 
 
-surround_LR(Synth, Chan, Value) ->
-    control7(Synth, Chan,
-	     ?MIDI_CTRL_INTEGRA_7_LEFT_RIGHT, 
-	     signed7(Value)).
-
-surround_LR2(Synth, Chan, Value) ->
-    control14(Synth, Chan,
-	      ?MIDI_CTRL_INTEGRA_7_LEFT_RIGHT,
-	      ?MIDI_CTRL_INTEGRA_7_LEFT_RIGHT_FINE, 
-	      signed14(Value)).
-
-surround_FB(Synth, Chan, Value) ->
-    control7(Synth, Chan,
-	     ?MIDI_CTRL_INTEGRA_7_FRONT_BACK, 
-	     signed7(Value)).
-
-surround_FB2(Synth, Chan, Value) ->
-    control14(Synth, Chan,
-	      ?MIDI_CTRL_INTEGRA_7_FRONT_BACK,
-	      ?MIDI_CTRL_INTEGRA_7_FRONT_BACK_FINE,
-	      signed14(Value)).
-
-surround_ambience(Synth, Chan, Value) ->
-    control7(Synth, Chan,
-	     ?MIDI_CTRL_INTEGRA_7_AMBIENCE, 
-	     signed7(Value)).
-
-surround_ambience2(Synth, Chan, Value) ->
-    control14(Synth, Chan,
-	      ?MIDI_CTRL_INTEGRA_7_AMBIENCE,
-	      ?MIDI_CTRL_INTEGRA_7_AMBIENCE_FINE,
-	      signed14(Value)).
 
 expression(Synth, Chan, Value) ->
     control7(Synth, Chan, 
@@ -272,6 +238,10 @@ proxy_out(In, Out) ->
 	{midi,In,Event} -> %% driver handle packet
 	    io:format("midi event ~p\n", [Event]),
 	    write(Out, midi_codec:event_encode(Event)),
+	    proxy_out(In,Out);
+	{midi,In,Event,_Delta} -> %% driver handle packet
+	    io:format("midi event ~p\n", [Event]),
+	    write(Out, midi_codec:event_encode(Event)),
 	    proxy_out(In,Out)
     after 0 ->
 	    proxy_in(In,Out)
@@ -316,6 +286,10 @@ input_loop(Fd, CallBack, State) ->
 message_loop(Fd, CallBack, State) ->
     receive
 	{midi,Fd,Event} -> %% driver handle packet
+	    io:format("midi event ~p\n", [Event]),
+	    CallBack(Fd, Event),
+	    message_loop(Fd, CallBack, State);
+	{midi,Fd,Event,_Delta} -> %% driver handle packet
 	    io:format("midi event ~p\n", [Event]),
 	    CallBack(Fd, Event),
 	    message_loop(Fd, CallBack, State)

@@ -128,12 +128,14 @@ typedef struct _midi_dev_t {
     int     raw_mode;
     int     bin_mode;
     int     running_mode;
+    int     timestamp_mode;
+    ErlNifTime last_time;
 } midi_dev_t;
 
 
 ErlNifFunc midi_funcs[] =
 {
-    NIF_FUNC("open",        2, midi_open),
+    NIF_FUNC("open",         2, midi_open),
     NIF_FUNC("close_",       1, midi_close),
     NIF_FUNC("write_",       2, midi_write),
     NIF_FUNC("read_",        1, midi_read),
@@ -159,6 +161,7 @@ DECL_ATOM(event);
 DECL_ATOM(binary);
 DECL_ATOM(list);
 DECL_ATOM(running);
+DECL_ATOM(timestamp);
 
 
 static ERL_NIF_TERM make_error(ErlNifEnv* env, int e)
@@ -218,9 +221,11 @@ static void midi_scan_init(midi_dev_t* dp)
     dp->running_in = 0;
     dp->status_in  = 0;
     dp->len = 0;
+    dp->last_time = enif_monotonic_time(ERL_NIF_USEC);
 }
 
-static int midi_scan(ErlNifEnv* env, midi_dev_t* dp, uint8_t* ptr, size_t len)
+static int midi_scan(ErlNifEnv* env, ErlNifUInt64 delta,
+		     midi_dev_t* dp, uint8_t* ptr, size_t len)
 {
     ERL_NIF_TERM event;
     ERL_NIF_TERM msg;
@@ -420,10 +425,20 @@ done:
 	event = ATOM(undefined);
 	break;
     }
-    // send as {midi, Fd, Event}
-    msg = enif_make_tuple3(env, ATOM(midi),
-			   enif_make_resource(env, dp),
-			   event);
+    if (dp->timestamp_mode) {
+	// send as {midi, Fd, Event, DeltaTime[ms]}
+	msg = enif_make_tuple4(env, ATOM(midi),
+			       enif_make_resource(env, dp),
+			       event,
+			       enif_make_uint64(env, delta));
+	delta = 0;
+    }
+    else {
+	// send as {midi, Fd, Event}
+	msg = enif_make_tuple3(env, ATOM(midi),
+			       enif_make_resource(env, dp),
+			       event);
+    }
     
     enif_send(env, enif_self(env, &pid), NULL, msg);
 
@@ -448,6 +463,7 @@ static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
     int raw_mode = 0;
     int bin_mode = 1;
     int running_mode = 0;
+    int timestamp_mode = 0;
     
     if (!enif_get_string(env, argv[0], devicename,
 			 sizeof(devicename), ERL_NIF_LATIN1))
@@ -460,6 +476,7 @@ static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
 	else if (head == ATOM(binary)) bin_mode = 1;
 	else if (head == ATOM(list)) bin_mode = 0;
 	else if (head == ATOM(running)) running_mode = 1;
+	else if (head == ATOM(timestamp)) timestamp_mode = 1;
 	else return enif_make_badarg(env);
 	list = tail;
     }
@@ -494,6 +511,7 @@ static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
     dp->raw_mode = raw_mode;
     dp->bin_mode = bin_mode;
     dp->running_mode = running_mode;
+    dp->timestamp_mode = timestamp_mode;
     dp->status_out = 0;
     midi_scan_init(dp);
     dev = enif_make_resource(env, dp);
@@ -588,7 +606,10 @@ static ERL_NIF_TERM midi_read(ErlNifEnv* env, int argc,
 	return enif_make_tuple2(env, ATOM(ok), data);
     }
     else {
-	n = midi_scan(env, dp, buffer, n);
+	ErlNifTime last_time = enif_monotonic_time(ERL_NIF_USEC);
+	ErlNifTime delta = last_time - dp->last_time;
+	n = midi_scan(env, delta, dp, buffer, n);
+	dp->last_time = last_time;
 	return enif_make_tuple2(env, ATOM(ok), enif_make_int(env, n));
     }
 }
@@ -620,6 +641,7 @@ static int midi_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     LOAD_ATOM(binary);
     LOAD_ATOM(list);
     LOAD_ATOM(running);
+    LOAD_ATOM(timestamp);    
     
 
     cb.dtor = (ErlNifResourceDtor*) midi_dtor;

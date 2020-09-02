@@ -9,6 +9,21 @@
 
 -export([load/1]).
 -export([text_expand/1,text_expand/2]).
+-export([read_tune/1]).
+-export([read_track/2]).
+-export([read_chunk/1]).
+-export([write_tune/2, write_tune/3, write_tune/4]).
+-export([write_track/2]).
+-export([write_chunk/3]).
+
+-ifdef(OTP_RELEASE). %% this implies 21 or higher
+-define(EXCEPTION(Class, Reason, Stacktrace), Class:Reason:Stacktrace).
+-define(GET_STACK(Stacktrace), Stacktrace).
+-else.
+-define(EXCEPTION(Class, Reason, _), Class:Reason).
+-define(GET_STACK(_), erlang:get_stacktrace()).
+-endif.
+
 
 load(File) ->
     case file:open(File,[read,raw,binary]) of
@@ -16,7 +31,8 @@ load(File) ->
 	    try read_tune(Fd) of
 		R -> R
 	    catch
-		error:E -> {error,E,erlang:get_stacktrace()}
+		?EXCEPTION(error,E,_Trace) ->
+		    {error,E,?GET_STACK(_Trace)}
 	    after
 		file:close(Fd)
 	    end;
@@ -39,6 +55,19 @@ read_tune(Fd) ->
 	    {error,bad_chunk}
     end.
 
+%% Format = 0 single track 
+%%          1 multi track played simultaneously, 1 track is tempo map
+%%          2 multi track independent sequence
+%%
+write_tune(Fd, Division) ->
+    write_tune(Fd, 0, 1, Division).
+
+write_tune(Fd, Format, Division) ->
+    write_tune(Fd, Format, 1, Division).
+
+write_tune(Fd, Format, NumTracks, Division) ->
+    write_chunk(Fd, <<"MThd">>, <<Format:16,NumTracks:16,Division:16/signed>>).
+
 read_track(Fd, I) ->
     case read_chunk(Fd) of
 	{ok,_Chunk={<<"MTrk">>,Data}} ->
@@ -53,6 +82,9 @@ read_track(Fd, I) ->
 	    {error, bad_track};
 	Error -> Error
     end.
+
+write_track(Fd, Data) ->
+    write_chunk(Fd, <<"MTrk">>, Data).
 
 parse_track(State, Acc) ->
     case midi_codec:scan_delta(State) of
@@ -83,6 +115,9 @@ read_chunk(Fd) ->
 	Error -> Error
     end.
 
+write_chunk(Fd, ID, Data) ->
+    file:write(Fd, <<ID:4/binary,(byte_size(Data)):32,Data/binary>>).
+    
 %%
 %% Utility to exand environment "variables" in unicode text
 %% variables are written as ${var} where var is a encoded atom
