@@ -10,19 +10,7 @@
 -export([start/0, start/1]).
 -export([lpk25/0, vmpk/0]).
 
--define(USEC_PER_MINUTE, 60000000).
--define(DEFAULT_MPQN,    500000).
-
--record(tparam,
-	{
-	  ppqn = 0.0 :: float(),  %% pulses per quarter note
-	  mpqn = 0   :: number(), %% micro seconds per quarter note
-	  bpm  = 0.0 :: float(),  %% beats per minute (USEC_PER_MINUTE/MPQN)
-	  uspp = 1.0 :: float(),  %% Micro seconds per pulse (MPQN/PPQN)
-	  sig  = {4,4} :: {integer(),integer()}, %% time signature
-	  cc   = 0     :: integer(), %% # MIDI clocks in a metronome click
-	  bb   = 0     :: integer()  %% # 32nd-notes in a MIDI quarter-note
-	}).
+-include("../include/midi.hrl").
 
 lpk25() ->
     start([{device,"LPK25"},{division,32}]).
@@ -36,41 +24,17 @@ start(Opts) ->
     midi:start(),
     spawn(fun() -> init(maps:from_list(Opts)) end).
 
-%% time_us()
-%% WaitUs = (Now - Ticks)*TParam#tparam.uspp,
-tparam(Opts) ->
-    BPM = maps:get(bpm, Opts, ?USEC_PER_MINUTE/?DEFAULT_MPQN),
-    Division = maps:get(division,Opts,1.0),
-    MPQN = ?USEC_PER_MINUTE/BPM,
-    PPQN = if Division >= 0 -> Division; true -> 1.0 end,
-    USPP =
-	if Division >= 0 ->
-		MPQN / PPQN;
-	   true ->
-		Div = trunc(Division),
-		TicksPerFrame = Div band 16#ff,
-		FramesPerSec = 
-		    case Div bsr 8 of
-			-24 -> 24.0;
-			-25 -> 25.0;
-			-29 -> 29.97;
-			-30 -> 30.0
-		    end,
-		?DEFAULT_MPQN / (FramesPerSec*TicksPerFrame)
-	end,
-    #tparam{mpqn=MPQN,ppqn=PPQN,bpm=BPM,uspp=USPP}.
-    
-
 init(Opts) when is_map(Opts) ->
     %% setup synth
     IN = open_input(Opts),
-    TParam = tparam(Opts),
+    BPM = maps:get(bpm, Opts, ?USEC_PER_MINUTE/?DEFAULT_MPQN),
+    Division = maps:get(division,Opts,1),
+    TParam = midi:tparam(BPM, Division),
     io:format("tparam = ~p\n", [TParam]),
     Status = flush_midi_in(IN),
     USPP = round(TParam#tparam.uspp),
     io:format("running uspp=~w\n", [USPP]),
     {ok,Fd} = file:open("rec.mid", [write,raw,binary]),
-    Division = trunc(maps:get(division,Opts,1.0)),
     ok = midi_file:write_tune(Fd, _Format=0, _NumTracks=1, Division),
     ok = midi_file:write_track(Fd, <<>>),
     {ok,Pos} = file:position(Fd, cur),   %% current start of data
@@ -189,34 +153,11 @@ open_input(Opts) ->
 	DeviceName = "/"++_ ->
 	    open_device(DeviceName);
 	Name ->
-	    Devices = midi:devices(),
-	    case midi:find_device_by_name(Name, Devices) of
-		false -> undefined;
+	    case midi:shared_input(Name) of
 		#{device := DeviceName } ->
 		    open_device(DeviceName);
-		#{output := [Port]} -> %% already connected
-		    case midi:find_device_by_port(Port, Devices) of
-			false ->
-			    {error, port_not_found};
-			#{device := DeviceName } ->
-			    open_device(DeviceName);
-			_Device -> %% go further?
-			    {error, device_not_found}
-		    end;
-		Device ->  %% program VMPK ...
-		    B = midi:backend(),
-		    case B:find_free_virtual_port(Devices) of
-			false ->
-			    io:format("forgot to install the virmid? run setup.sh\n"),
-			    {error, no_ports_available};
-			Virt = #{ device := DeviceName } ->
-			    case B:connect(Device, Virt) of
-				"" ->
-				    open_device(DeviceName);
-				Err -> 
-				    {error,Err}
-			    end
-		    end
+		Error = {error,_} ->
+		    Error
 	    end
     end.
 

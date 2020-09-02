@@ -30,6 +30,11 @@
 
 -export([io_prog/1, input_prog/2]).
 -export([proxy/2]).
+-export([shared_input/1]).
+-export([tparam/2]).
+-export([tparam_set_mpqn/2]).
+-export([tparam_set_time_signature/2]).
+
 %% nifs
 -export([open/2, close_/1, read_/1, write_/2]).
 -export([backend/0, synth/0]).
@@ -214,6 +219,38 @@ control14(Synth, Chan, Control, ControlFine, Arg) ->
 program_change(Synth, Chan, Prog) ->
     write(Synth, <<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4,0:1,Prog:7>>).
 
+%% time parameters
+
+%% time_us()
+%% WaitUs = (Now - Ticks)*TParam#tparam.uspp,
+tparam(BPM, Division) ->
+    MPQN = ?USEC_PER_MINUTE/BPM,
+    PPQN = if Division >= 0 -> Division; true -> 1.0 end,
+    USPP =
+	if Division >= 0 ->
+		MPQN / PPQN;
+	   true ->
+		Div = trunc(Division),
+		TicksPerFrame = Div band 16#ff,
+		FramesPerSec = 
+		    case Div bsr 8 of
+			-24 -> 24.0;
+			-25 -> 25.0;
+			-29 -> 29.97;
+			-30 -> 30.0
+		    end,
+		?DEFAULT_MPQN / (FramesPerSec*TicksPerFrame)
+	end,
+    #tparam{mpqn=MPQN,ppqn=PPQN,bpm=BPM,uspp=USPP}.
+
+tparam_set_mpqn(TParam=#tparam{ppqn=PPQN}, MPQN) ->
+    BPM  = ?USEC_PER_MINUTE / MPQN,
+    USPP = MPQN / PPQN,  %% micro seconds per (midi) pulse
+    TParam#tparam{mpqn=MPQN,bpm=BPM,uspp=USPP}.
+
+tparam_set_time_signature(TParam, [NN,DD,CC,BB]) ->
+    {ok, TParam#tparam{sig={NN,(1 bsl DD)},cc=CC,bb=BB}}.
+
 %% 
 proxy(InputDevice, OutputDevice) ->
     {ok,In}  = open(InputDevice,[event,list,running]),
@@ -305,6 +342,40 @@ backend() ->
 
 devices() ->
     (backend()):devices().
+
+%% open "shared" input midi device (keyboard etc) by first try to locate
+%% a virtual device already connected to the midi devie.
+%% otherwise find a "free" virtual device and connect the
+%% then return that device for application to open instead of "real"
+%% hardware device that is mostly one at the time access...
+
+shared_input(Name) ->
+    B = backend(),    
+    Devices = B:devices(),
+    case find_device_by_name(Name, Devices) of
+	false ->
+	    {error, enoent};
+	#{output := [Port]} -> %% already connected
+	    case midi:find_device_by_port(Port, Devices) of
+		false ->
+		    {error, port_not_found};  %% maybe closing, retry?
+		Parent ->
+		    %% maybe check that "Parent" is a virtual device?
+		    Parent
+	    end;
+	Input ->
+	    %% find free virtual device
+	    case B:find_free_virtual_port(Devices) of
+		false ->
+		    io:format("forgot to install the virmid? run setup.sh\n"),
+		    {error, no_ports_available};
+		Virtual = #{ device := _DeviceName } ->
+		    case B:connect(Input, Virtual) of
+			"" -> Virtual;
+			Err -> {error, Err}
+		    end
+	    end
+    end.
 
 open_synth() ->
     case setup_synth() of

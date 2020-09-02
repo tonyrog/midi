@@ -21,25 +21,11 @@
 
 -export([tracks/5]).
 
--define(USEC_PER_MINUTE, 60000000).
--define(DEFAULT_MPQN,    500000).
-
 -include("../include/midi.hrl").
 
 -define(format_record(T,R), format_record((R), record_info(fields,T))).
 	
 %% time parameters
-
--record(tparam,
-	{
-	  ppqn = 0.0 :: float(),  %% pulses per quarter note
-	  mpqn = 0   :: number(), %% micro seconds per quarter note
-	  bpm  = 0.0 :: float(),  %% beats per minute (USEC_PER_MINUTE/MPQN)
-	  uspp = 1.0 :: float(),  %% Micro seconds per pulse (MPQN/PPQN)
-	  sig  = {4,4} :: {integer(),integer()}, %% time signature
-	  cc   = 0     :: integer(), %% # MIDI clocks in a metronome click
-	  bb   = 0     :: integer()  %% # 32nd-notes in a MIDI quarter-note
-	}).
 
 file(File) ->
     file(File, synth).
@@ -74,23 +60,7 @@ tracks(Fd, Tracks, BPM, Bank, Division) ->
        true ->
 	    ok
     end,
-    MPQN = ?USEC_PER_MINUTE/BPM,
-    PPQN = if Division >= 0 -> Division; true -> 1.0 end,
-    USPP =
-	if Division >= 0 ->
-		MPQN / PPQN;
-	   true ->
-		TicksPerFrame = Division band 16#ff,
-		FramesPerSec = 
-		    case Division bsr 8 of
-			-24 -> 24.0;
-			-25 -> 25.0;
-			-29 -> 29.97;
-			-30 -> 30.0
-		    end,
-		?DEFAULT_MPQN / (FramesPerSec*TicksPerFrame)
-	end,
-    TParam = #tparam{mpqn=MPQN,ppqn=PPQN,bpm=BPM,uspp=USPP},
+    TParam = midi:tparam(BPM, Division),
     play(Fd,Tracks,TParam).
 
 play(Fd,Trs,TParam) ->
@@ -143,16 +113,9 @@ exec(_Fd,{meta,Meta,Value},TParam) ->
 	end_of_track ->
 	    eot;
 	tempo ->
-	    PPQN = TParam#tparam.ppqn,
-	    MPQN = Value,
-	    BPM  = ?USEC_PER_MINUTE / MPQN,
-	    USPP = MPQN / PPQN,  %% micro seconds per (midi) pulse
-	    TParam1 = TParam#tparam{mpqn=MPQN,bpm=BPM,uspp=USPP},
-	    {tempo,TParam1};
+	    {tempo, midi:tparam_set_mpqn(TParam, Value)};
 	time_signature ->
-	    [NN,DD,CC,BB] = Value,
-	    TParam1 = TParam#tparam{sig={NN,(1 bsl DD)},cc=CC,bb=BB},
-	    {ok,TParam1};
+	    {ok,midi:tparam_set_time_signature(TParam,Value)};
 	_ ->
 	    {ok,TParam}
     end;    
@@ -291,5 +254,3 @@ fmt_flds(R, I, [F|Fs]) -> [",",fmt_fld(R,I,F),fmt_flds(R,I+1,Fs)].
 fmt_fld(R, I, F) ->
     [atom_to_list(F),"=",io_lib:format("~p",[element(I,R)])].
      
-    
-    

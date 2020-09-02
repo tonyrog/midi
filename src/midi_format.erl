@@ -8,8 +8,6 @@
 -include("../include/midi.hrl").
 
 -define(HUGE, 16#ffffffff).
--define(USEC_PER_MINUTE, 60000000).
--define(DEFAULT_MPQN,    500000).
 -define(EOT, '-').
 
 file(File) ->

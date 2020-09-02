@@ -70,6 +70,21 @@
 	 data 
 	}).
 
+-define(USEC_PER_MINUTE, 60000000).
+-define(DEFAULT_MPQN,    500000).
+
+-record(tparam,
+	{
+	  ppqn = 0.0 :: float(),  %% pulses per quarter note
+	  mpqn = 0   :: number(), %% micro seconds per quarter note
+	  bpm  = 0.0 :: float(),  %% beats per minute (USEC_PER_MINUTE/MPQN)
+	  uspp = 1.0 :: float(),  %% Micro seconds per pulse (MPQN/PPQN)
+	  sig  = {4,4} :: {integer(),integer()}, %% time signature
+	  cc   = 0     :: integer(), %% # MIDI clocks in a metronome click
+	  bb   = 0     :: integer()  %% # 32nd-notes in a MIDI quarter-note
+	}).
+
+
 %% MIDI message types
 -define(MIDI_EVENT_NOTEOFF, 	  16#8).  %% channel 0-15 in lower nibble
 -define(MIDI_EVENT_NOTEON, 	  16#9).  %% channel 0-15 in lower nibble

@@ -14,24 +14,10 @@
 
 -include("../include/midi.hrl").
 
--define(USEC_PER_MINUTE, 60000000).
--define(DEFAULT_MPQN,    500000).
-
 -define(CLICK_CHAN, 9).
 -define(CLICK_NOTE, ?GM_DRUM_Closed_Hi_hat).
 
 -define(TICK_NEXT(I,N), (((((I)+1)-1) rem (N))+1)).
-
--record(tparam,
-	{
-	  ppqn = 0.0 :: float(),  %% pulses per quarter note
-	  mpqn = 0   :: number(), %% micro seconds per quarter note
-	  bpm  = 0.0 :: float(),  %% beats per minute (USEC_PER_MINUTE/MPQN)
-	  uspp = 1.0 :: float(),  %% Micro seconds per pulse (MPQN/PPQN)
-	  sig  = {4,4} :: {integer(),integer()}, %% time signature
-	  cc   = 0     :: integer(), %% # MIDI clocks in a metronome click
-	  bb   = 0     :: integer()  %% # 32nd-notes in a MIDI quarter-note
-	}).
 
 -record(wparam,
 	{
@@ -82,9 +68,7 @@ init(Opts) when is_map(Opts) ->
     %% setup synth
     Out = synth,  %% default output synth
     IN = open_input(Opts),
-    BPM = maps:get(bpm, Opts, ?USEC_PER_MINUTE/?DEFAULT_MPQN),
     Bank = maps:get(bank,Opts,0),
-    Division = maps:get(division,Opts,1.0),
     midi:reset_all(Out, 0),
     if Bank > 0 ->
 	    lists:foreach(
@@ -95,29 +79,14 @@ init(Opts) when is_map(Opts) ->
     midi:program_change(Out, 0, ?GM_MIDI_Acoustic_Grand_Piano),
     midi:program_change(Out, 1, ?GM_MIDI_Acoustic_Guitar_nylon),
     midi:program_change(Out, 2, ?GM_MIDI_Acoustic_Bass),
-
-    MPQN = ?USEC_PER_MINUTE/BPM,
-    PPQN = if Division >= 0 -> Division; true -> 1.0 end,
-    USPP =
-	if Division >= 0 ->
-		MPQN / PPQN;
-	   true ->
-		TicksPerFrame = Division band 16#ff,
-		FramesPerSec = 
-		    case Division bsr 8 of
-			-24 -> 24.0;
-			-25 -> 25.0;
-			-29 -> 29.97;
-			-30 -> 30.0
-		    end,
-		?DEFAULT_MPQN / (FramesPerSec*TicksPerFrame)
-	end,
-    TParam = #tparam{mpqn=MPQN,ppqn=PPQN,bpm=BPM,uspp=USPP},
+    BPM = maps:get(bpm, Opts, ?USEC_PER_MINUTE/?DEFAULT_MPQN),
+    Division = maps:get(division,Opts,1),
+    TParam = midi:tparam(BPM, Division),
     io:format("TParam ppqn=~w,uspp=~w\n", 
 	      [TParam#tparam.ppqn,TParam#tparam.uspp]),
     Bars = 4,
-    PPL = trunc(PPQN * 4 * Bars),
-    draw_grid(PPQN, Bars, WParam),
+    PPL = trunc(TParam#tparam.ppqn * 4 * Bars),
+    draw_grid(TParam#tparam.ppqn, Bars, WParam),
     Loop = erlang:make_tuple(PPL, #{}),
     Status = flush_midi_in(IN),
     loop(Out,IN,Status,1,Loop,1,time_us(),TParam,WParam,#{}).
@@ -486,46 +455,17 @@ send(OUT, [E|Events]) ->
     ok = midi:write(OUT, Bytes),
     send(OUT, Events).
 
-%% A number of posibilities
-%% - device is device name, then it starts with a slash
-%% - it is a device with a device name that can be used directly
-%% - it is a virtual device already connected to a virtual midi
-%% - it is a virtual device that needs to be connected to a virtual midi
-%%   that we need to find and connect
 open_input(Opts) ->
     case maps:get(device, Opts, undefined) of
 	undefined -> undefined;
 	DeviceName = "/"++_ ->
 	    open_device(DeviceName);
 	Name ->
-	    Devices = midi:devices(),
-	    case midi:find_device_by_name(Name, Devices) of
-		false -> undefined;
+	    case midi:shared_input(Name) of
 		#{device := DeviceName } ->
 		    open_device(DeviceName);
-		#{output := [Port]} -> %% already connected
-		    case midi:find_device_by_port(Port, Devices) of
-			false ->
-			    {error, port_not_found};
-			#{device := DeviceName } ->
-			    open_device(DeviceName);
-			_Device -> %% go further?
-			    {error, device_not_found}
-		    end;
-		Device ->  %% program VMPK ...
-		    B = midi:backend(),
-		    case B:find_free_virtual_port(Devices) of
-			false ->
-			    io:format("forgot to install the virmid? run setup.sh\n"),
-			    {error, no_ports_available};
-			Virt = #{ device := DeviceName } ->
-			    case B:connect(Device, Virt) of
-				"" ->
-				    open_device(DeviceName);
-				Err -> 
-				    {error,Err}
-			    end
-		    end
+		Error = {error,_} ->
+		    Error
 	    end
     end.
 
