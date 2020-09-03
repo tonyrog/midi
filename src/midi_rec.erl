@@ -37,11 +37,17 @@ init(Opts) when is_map(Opts) ->
     {ok,Fd} = file:open("rec.mid", [write,raw,binary]),
     ok = midi_file:write_tune(Fd, _Format=0, _NumTracks=1, Division),
     ok = midi_file:write_track(Fd, <<>>),
-    {ok,Pos} = file:position(Fd, cur),   %% current start of data
-    io:format("pos = ~w\n", [Pos]),
-    loop(IN, Status, USPP, Fd, Pos, false).
+    {ok,PatchPos} = file:position(Fd, cur), %% current start of data
+    io:format("pos = ~w\n", [PatchPos]),
+    {NN,DD} = TParam#tparam.sig,
+    TimeSignature = {meta, time_signature, 
+		     [NN,DD,TParam#tparam.cc,TParam#tparam.bb]},
+    ok = file:write(Fd, [0,midi_codec:event_encode(TimeSignature)]),
+    TempoChange = {meta, tempo, TParam#tparam.mpqn},
+    ok = file:write(Fd, [0,midi_codec:event_encode(TempoChange)]),
+    loop(IN, Status, USPP, Fd, PatchPos, true).
 
-loop(IN,Status,USPP,Fd,Pos,Flush) ->
+loop(IN,Status,USPP,Fd,PatchPos,Flush) ->
     receive
 	{midi,IN,Event,Delta} ->
 	    case Status of
@@ -50,12 +56,12 @@ loop(IN,Status,USPP,Fd,Pos,Flush) ->
 		    EventList = read_midi_in(N-1,IN,USPP,[{D,Event}]),
 		    output(Fd,EventList),
 		    Status1 = midi:read(IN),
-		    loop(IN,Status1,USPP,Fd,Pos,true);
+		    loop(IN,Status1,USPP,Fd,PatchPos,true);
 		select ->
 		    D = Delta div USPP,
 		    EventList = [{D,Event}],
 		    output(Fd,EventList),
-		    loop(IN,Status,USPP,Fd,Pos,true)
+		    loop(IN,Status,USPP,Fd,PatchPos,true)
 	    end;
 
 	{select,IN,undefined,ready_input} ->
@@ -63,22 +69,22 @@ loop(IN,Status,USPP,Fd,Pos,Flush) ->
 	    EventList = read_midi_in(N,IN,USPP,[]),
 	    output(Fd,EventList),
 	    Status1 = midi:read(IN),
-	    loop(IN,Status1,USPP,Fd,Pos,true)
+	    loop(IN,Status1,USPP,Fd,PatchPos,true)
 
     after 2000 ->
 	    if Flush ->
 		    {ok,Cur} = file:position(Fd, cur),
 		    output(Fd,[{1000,{meta,end_of_track,[]}}]),
 		    {ok,End} = file:position(Fd, cur),
-		    Length = End - Pos,
+		    Length = End - PatchPos,
 		    io:format("length = ~p\n", [Length]),
-		    file:pwrite(Fd, Pos-4, <<Length:32>>),
+		    file:pwrite(Fd, PatchPos-4, <<Length:32>>),
 		    {ok,_} = file:position(Fd, Cur),
 		    file:sync(Fd),
-		    loop(IN,Status,USPP,Fd,Pos,false);
+		    loop(IN,Status,USPP,Fd,PatchPos,false);
 	       true ->
 		    io:format("not moved\n"),
-		    loop(IN,Status,USPP,Fd,Pos,false)
+		    loop(IN,Status,USPP,Fd,PatchPos,false)
 	    end
     end.
 

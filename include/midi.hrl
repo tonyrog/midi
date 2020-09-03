@@ -71,7 +71,7 @@
 	}).
 
 -define(USEC_PER_MINUTE, 60000000).
--define(DEFAULT_MPQN,    500000).
+-define(DEFAULT_MPQN,    500000).  %% 120 BPM
 
 -record(tparam,
 	{

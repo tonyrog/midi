@@ -32,7 +32,7 @@
 -export([proxy/2]).
 -export([shared_input/1]).
 -export([tparam/2]).
--export([tparam_set_mpqn/2]).
+-export([tparam_set_tempo/2]).
 -export([tparam_set_time_signature/2]).
 
 %% nifs
@@ -239,11 +239,11 @@ tparam(BPM, Division) ->
 			-29 -> 29.97;
 			-30 -> 30.0
 		    end,
-		?DEFAULT_MPQN / (FramesPerSec*TicksPerFrame)
+		MPQN / (FramesPerSec*TicksPerFrame)
 	end,
     #tparam{mpqn=MPQN,ppqn=PPQN,bpm=BPM,uspp=USPP}.
 
-tparam_set_mpqn(TParam=#tparam{ppqn=PPQN}, MPQN) ->
+tparam_set_tempo(TParam=#tparam{ppqn=PPQN}, MPQN) ->
     BPM  = ?USEC_PER_MINUTE / MPQN,
     USPP = MPQN / PPQN,  %% micro seconds per (midi) pulse
     TParam#tparam{mpqn=MPQN,bpm=BPM,uspp=USPP}.
