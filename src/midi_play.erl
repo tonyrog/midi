@@ -113,7 +113,7 @@ exec(_Fd,{meta,Meta,Value},TParam) ->
 	end_of_track ->
 	    eot;
 	tempo ->
-	    {tempo, midi:tparam_set_mpqn(TParam, Value)};
+	    {tempo, midi:tparam_set_tempo(TParam, Value)};
 	time_signature ->
 	    {ok,midi:tparam_set_time_signature(TParam,Value)};
 	_ ->

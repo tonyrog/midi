@@ -7,6 +7,7 @@
 
 -module(midi_codec).
 
+-export([encode/1, decode/1]).
 -export([init/1, scan/1, scan/2]).
 -export([scan_delta/1]).
 -export([event_decode/2, event_encode/1]).
@@ -18,6 +19,23 @@
 -export([gm_midi_map/0, gm_drum_map/0]).
 
 -include("../include/midi.hrl").
+
+decode(Data) ->
+    decode_all(init(Data)).
+
+decode_all(S) ->
+    case scan(S) of
+	{{Status,Params},S1} ->
+	    [event_decode(Status,Params) | decode_all(S1)];
+	{more,_} -> [];
+	{eot,_} -> []
+    end.
+
+encode(List) when is_list(List) ->
+    events_encode(List);
+encode(Event) when is_tuple(Event) ->
+    event_encode(Event).
+
 
 init(Data) ->
     {status, Data, 0, 0, []}.
@@ -173,9 +191,10 @@ events_encode(E, [], Data) ->
     
 events_encode_(Status,Chan,[{Status,Chan,B,C}|Es],Data) ->
     events_encode_(Status,Chan,Es,<<Data/binary,0:1,B:7,0:1,C:7>>);
+%% Well some tools do not support this! Maybe enable with option?
 %% special case note_off = note_on vel=0
-events_encode_(note_on,Chan,[{note_off,Chan,B,_C}|Es],Data) ->
-    events_encode_(note_on,Chan,Es,<<Data/binary,0:1,B:7,0:1,0:7>>);
+%% events_encode_(note_on,Chan,[{note_off,Chan,B,_C}|Es],Data) ->
+%%    events_encode_(note_on,Chan,Es,<<Data/binary,0:1,B:7,0:1,0:7>>);
 events_encode_(_Status,_Chan,[E|Es],Data) ->
     events_encode(E, Es, Data);
 events_encode_(_Status,_Chan,[],Data) ->
@@ -268,14 +287,13 @@ event_encode({meta,midi_port,Port}) ->
 event_encode({meta,end_of_track,_}) ->
     meta_encode(?MIDI_META_END_OF_TRACK, []);
 event_encode({meta,tempo,Tempo}) ->
-    meta_encode(?MIDI_META_TEMPO, 
-		[(Tempo bsl 16) band 16#ff,
-		 (Tempo bsl 8) band 16#ff,
-		 (Tempo bsl 0) band 16#ff]);
+    <<T2,T1,T0>> = <<(trunc(Tempo)):24>>,
+    meta_encode(?MIDI_META_TEMPO, [T2,T1,T0]);
 event_encode({meta, smpte_offset, [HR,MN,SE,FR,FF]}) ->
     meta_encode(?MIDI_META_SMPTE_OFFSET, [HR,MN,SE,FR,FF]);
 event_encode({meta, time_signature, [NN,DD,CC,BB]}) ->
-    meta_encode(?MIDI_META_TIME_SIGNATURE, [NN,DD,CC,BB]);
+    DDi = trunc(math:log2(DD)),
+    meta_encode(?MIDI_META_TIME_SIGNATURE, [NN,DDi,CC,BB]);
 event_encode({meta, key_signature, [SF,MI]}) ->
     meta_encode(?MIDI_META_KEY_SIGNATURE, [SF,MI]);
 event_encode({meta, proprietary, Params}) ->
@@ -285,7 +303,8 @@ event_encode({meta, Meta, Params}) when is_integer(Meta) ->
 
 meta_encode(Meta, Params) ->
     LCode = length_encode(length(Params)),
-    Bin = << <<0:1,P:7>> || P <- Params >>,
+    %% Bin = << <<0:1,P:7>> || P <- Params >>,
+    Bin = << <<P>> || P <- Params >>,
     <<?MIDI_EVENT_SYS:4,15:4,0:1,Meta:7,LCode/binary,Bin/binary>>.
 
 length_encode(L) when L >= 0, L =< 16#0fffffff ->
@@ -376,7 +395,7 @@ meta_decode([Meta|Params]) ->
 	?MIDI_META_END_OF_TRACK -> {meta,end_of_track,[]}; %% -
 	?MIDI_META_TEMPO -> %% uint24/big
 	    case Params of
-		[T2,T1,T0] -> {meta,tempo,(T2*256+T1)*256+T0}  
+		[T2,T1,T0] -> {meta,tempo,(T2 bsl 16)+(T1 bsl 8)+T0}
 	    end;
 	?MIDI_META_SMPTE_OFFSET -> %% <<HR:8,MN:8,SE:8,FR:8,FF:8>>
 	    case Params of
@@ -386,7 +405,7 @@ meta_decode([Meta|Params]) ->
 	?MIDI_META_TIME_SIGNATURE -> %% <<NN:8,DD:8,CC:8,BB:8>>
 	    case Params of
 		[NN,DD,CC,BB] ->
-		    {meta,time_signature, [NN,DD,CC,BB]}
+		    {meta,time_signature, [NN,(1 bsl DD),CC,BB]}
 	    end;
 	?MIDI_META_KEY_SIGNATURE -> %% <<SF:8,MI:8>>
 	    case Params of
