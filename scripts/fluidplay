@@ -1,0 +1,5 @@
+#!/bin/sh
+# script to play midi file on fluid
+#
+
+fluidsynth -z128 -a alsa -m alsa_seq -l -i /usr/share/sounds/sf2/FluidR3_GM.sf2 $1
