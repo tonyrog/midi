@@ -18,13 +18,14 @@
 #define UNUSED(a) ((void) a)
 
 #ifdef DEBUG
-#include <stdio.h>
-#define DBG(...) printf(__VA_ARGS__)
-#define BADARG(env) printf("matrix_nif.c: badarg line=%d\r\n", __LINE__), enif_make_badarg((env))
+#define DEBUGF(f,a...) enif_fprintf(stderr, f "\r\n", a)
 #else
-#define DBG(...)
-#define BADARG(env) enif_make_badarg((env))
+#define DEBUGF(f,a...)
 #endif
+#define ERRORF(f,a...) enif_fprintf(stderr, f "\r\n", a)
+#define BADARG(env) enif_printf(stderr, "%s: badarg line=%d\r\n", __FILE__, __LINE__), enif_make_badarg((env))
+
+#define UNUSED(a) ((void) a)
 
 #ifdef ALSA
 #include <alsa/asoundlib.h>
@@ -40,7 +41,6 @@ static int alsa_event_handle(midi_handle_t h)
     int i, n;
     struct pollfd pfd[4];
     n = snd_rawmidi_poll_descriptors_count(h);
-    // DBG("# poll descriptors = %d\r\n", n);
     snd_rawmidi_poll_descriptors(h, pfd, n);
     if (n == 1)
 	return pfd[0].fd;
@@ -72,30 +72,33 @@ typedef int midi_handle_t;
 #define LOAD_ATOM_STRING(name,string)		\
     atm_##name = enif_make_atom(env,string)
 
-static int midi_load(ErlNifEnv* env, void** priv_data,
+static int load(ErlNifEnv* env, void** priv_data,
 		       ERL_NIF_TERM load_info);
-static int midi_upgrade(ErlNifEnv* env, void** priv_data,
+static int upgrade(ErlNifEnv* env, void** priv_data,
 			  void** old_priv_data,
 		       ERL_NIF_TERM load_info);
-static void midi_unload(ErlNifEnv* env, void* priv_data);
+static void unload(ErlNifEnv* env, void* priv_data);
 
-static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
-			      const ERL_NIF_TERM argv[]);
-static ERL_NIF_TERM midi_close(ErlNifEnv* env, int argc,
-			       const ERL_NIF_TERM argv[]);
-static ERL_NIF_TERM midi_write(ErlNifEnv* env, int argc,
-			       const ERL_NIF_TERM argv[]);
-static ERL_NIF_TERM midi_read(ErlNifEnv* env, int argc,
-			      const ERL_NIF_TERM argv[]);
-
-#if (ERL_NIF_MAJOR_VERSION > 2) || ((ERL_NIF_MAJOR_VERSION == 2) && (ERL_NIF_MINOR_VERSION >= 12))
+// Dirty optional since 2.7 and mandatory since 2.12
+#if (ERL_NIF_MAJOR_VERSION > 2) || ((ERL_NIF_MAJOR_VERSION == 2) && (ERL_NIF_MINOR_VERSION >= 7))
+#ifdef USE_DIRTY_SCHEDULER
 #define NIF_FUNC(name,arity,fptr) {(name),(arity),(fptr),(ERL_NIF_DIRTY_JOB_CPU_BOUND)}
-//#define NIF_FUNC(name,arity,fptr) {(name),(arity),(fptr),(0)}
-#elif (ERL_NIF_MAJOR_VERSION > 2) || ((ERL_NIF_MAJOR_VERSION == 2) && (ERL_NIF_MINOR_VERSION >= 7))
+#define NIF_DIRTY_FUNC(name,arity,fptr) {(name),(arity),(fptr),(ERL_NIF_DIRTY_JOB_CPU_BOUND)}
+#else
 #define NIF_FUNC(name,arity,fptr) {(name),(arity),(fptr),(0)}
+#define NIF_DIRTY_FUNC(name,arity,fptr) {(name),(arity),(fptr),(ERL_NIF_DIRTY_JOB_CPU_BOUND)}
+#endif
 #else
 #define NIF_FUNC(name,arity,fptr) {(name),(arity),(fptr)}
+#define NIF_DIRTY_FUNC(name,arity,fptr) {(name),(arity),(fptr)}
 #endif
+
+
+#define NIF_LIST \
+    NIF("open", 2,  nif_open)  \
+    NIF("close_", 1, nif_close) \
+    NIF("write_", 2, nif_write) \
+    NIF("read_", 1,  nif_read)
 
 static ErlNifResourceType* midi_r;
 
@@ -133,14 +136,6 @@ typedef struct _midi_dev_t {
 } midi_dev_t;
 
 
-ErlNifFunc midi_funcs[] =
-{
-    NIF_FUNC("open",         2, midi_open),
-    NIF_FUNC("close_",       1, midi_close),
-    NIF_FUNC("write_",       2, midi_write),
-    NIF_FUNC("read_",        1, midi_read),
-};
-
 DECL_ATOM(ok);
 DECL_ATOM(error);
 DECL_ATOM(undefined);
@@ -163,6 +158,32 @@ DECL_ATOM(list);
 DECL_ATOM(running);
 DECL_ATOM(timestamp);
 
+// Declare all nif functions
+#undef NIF
+#ifdef NIF_TRACE
+#define NIF(name, arity, func)						\
+    static ERL_NIF_TERM func(ErlNifEnv* env, int argc,const ERL_NIF_TERM argv[]); \
+    static ERL_NIF_TERM trace##_##func##_##arity(ErlNifEnv* env, int argc,const ERL_NIF_TERM argv[]);
+#else
+#define NIF(name, arity, func)						\
+    static ERL_NIF_TERM func(ErlNifEnv* env, int argc,const ERL_NIF_TERM argv[]);
+#endif
+
+NIF_LIST
+
+#undef NIF
+#ifdef NIF_TRACE
+#define NIF(name,arity,func) NIF_FUNC(name, arity, trace##_##func##_##arity),
+#else
+#define NIF(name,arity,func) NIF_FUNC(name, arity, func),
+#endif
+
+static ErlNifFunc nif_funcs[] =
+{
+    NIF_LIST
+};
+
+
 
 static ERL_NIF_TERM make_error(ErlNifEnv* env, int e)
 {
@@ -175,8 +196,8 @@ static void midi_dtor(ErlNifEnv* env, midi_dev_t* dp)
 {
     UNUSED(env);
 
-    DBG("midi_dtor: close in=%lx, out=%lx\r\n",
-	(intptr_t)dp->in, (intptr_t)dp->out);
+    DEBUGF("midi_dtor: close in=%lx, out=%lx",
+	   (intptr_t)dp->in, (intptr_t)dp->out);
     if (dp->in != INVALID) {
 	CLOSE(dp->in);
 	dp->in = INVALID;
@@ -192,7 +213,7 @@ static void midi_stop(ErlNifEnv* env, midi_dev_t* dp,
 		      ErlNifEvent event, int is_direct_call)
 {
     UNUSED(env);
-    DBG("midi_stop: event=%lx\r\n", (intptr_t)event);
+    DEBUGF("midi_stop: event=%lx", (intptr_t)event);
     // FIXME?: currently just assume we close main handle
     if (dp->in != INVALID) {
 	CLOSE(dp->in);
@@ -209,7 +230,7 @@ static void midi_down(ErlNifEnv* env, midi_dev_t* dp,
 		      const ErlNifPid* pid, const ErlNifMonitor* mon)
 {
     UNUSED(env);
-    DBG("midi_down: in=%lx, out=%lx\r\n",
+    DEBUGF("midi_down: in=%lx, out=%lx",
 	(intptr_t)dp->in, (intptr_t)dp->out);
 }
 
@@ -451,8 +472,8 @@ done:
 }
 
 // open(Device::string(),[raw,binary]) -> Synth::integer.
-static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
-			      const ERL_NIF_TERM argv[])
+static ERL_NIF_TERM nif_open(ErlNifEnv* env, int argc,
+			     const ERL_NIF_TERM argv[])
 {
     midi_handle_t in, out;
     midi_dev_t* dp;
@@ -520,14 +541,14 @@ static ERL_NIF_TERM midi_open(ErlNifEnv* env, int argc,
 }
 
 // close(Synth::integer()) -> ok
-static ERL_NIF_TERM midi_close(ErlNifEnv* env, int argc,
-			       const ERL_NIF_TERM argv[])
+static ERL_NIF_TERM nif_close(ErlNifEnv* env, int argc,
+			      const ERL_NIF_TERM argv[])
 {
     midi_dev_t* dp;
     if (!enif_get_resource(env, argv[0], midi_r, (void**)&dp))
 	return enif_make_badarg(env);
-    DBG("midi:close: close in=%lx, out=%lx\r\n",
-	(intptr_t)dp->in, (intptr_t)dp->out);
+    DEBUGF("midi:close: close in=%lx, out=%lx",
+	   (intptr_t)dp->in, (intptr_t)dp->out);
     // DRAIN(dp->out) ?
     if (dp->in != INVALID) {
 	ErlNifPid pid;
@@ -542,7 +563,7 @@ static ERL_NIF_TERM midi_close(ErlNifEnv* env, int argc,
 // write(Synth::integer(), Data::binary())
 // if running mode then check the first byte againt
 // a the status byte to check if we may skip to write it
-static ERL_NIF_TERM midi_write(ErlNifEnv* env, int argc,
+static ERL_NIF_TERM nif_write(ErlNifEnv* env, int argc,
 			       const ERL_NIF_TERM argv[])
 {
     midi_dev_t* dp;
@@ -572,8 +593,8 @@ static ERL_NIF_TERM midi_write(ErlNifEnv* env, int argc,
     return ATOM(ok);
 }
 
-static ERL_NIF_TERM midi_read(ErlNifEnv* env, int argc,
-			      const ERL_NIF_TERM argv[])
+static ERL_NIF_TERM nif_read(ErlNifEnv* env, int argc,
+			     const ERL_NIF_TERM argv[])
 {
     midi_dev_t* dp;
     unsigned char buffer[MAX_MIDI_BUF];
@@ -614,13 +635,47 @@ static ERL_NIF_TERM midi_read(ErlNifEnv* env, int argc,
     }
 }
 
-static int midi_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
-{
-    UNUSED(env);
-    UNUSED(load_info);
-    ErlNifResourceFlags tried;
-    ErlNifResourceTypeInit cb;
+// create all tracing NIFs
+#ifdef NIF_TRACE
 
+#undef NIF
+
+static void trace_print_arg_list(ErlNifEnv* env,int argc,const ERL_NIF_TERM argv[])
+{
+    enif_fprintf(stdout, "(");
+    if (argc > 0) {
+	int i;
+	if (enif_is_ref(env, argv[0])) {
+	    // FIXME print object type if available
+	    enif_fprintf(stdout, "%T", argv[0]);
+	}
+	else
+	    enif_fprintf(stdout, "%T", argv[0]);
+	for (i = 1; i < argc; i++)
+	    enif_fprintf(stdout, ",%T", argv[i]);
+    }
+    enif_fprintf(stdout, ")");
+}
+
+#define NIF(name, arity, func)					\
+static ERL_NIF_TERM trace##_##func##_##arity(ErlNifEnv* env, int argc,const ERL_NIF_TERM argv[]) \
+{ \
+    ERL_NIF_TERM result;					\
+    enif_fprintf(stdout, "ENTER %s", (name));			\
+    trace_print_arg_list(env, argc, argv);			\
+    enif_fprintf(stdout, "\r\n");				\
+    result = func(env, argc, argv);				\
+    enif_fprintf(stdout, "  RESULT=%T\r\n", (result));		\
+    enif_fprintf(stdout, "LEAVE %s\r\n", (name));		\
+    return result;						\
+}
+
+NIF_LIST
+
+#endif
+
+static int load_atoms(ErlNifEnv* env)
+{
     LOAD_ATOM(ok);
     LOAD_ATOM(error);
     LOAD_ATOM(undefined);
@@ -641,38 +696,68 @@ static int midi_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     LOAD_ATOM(binary);
     LOAD_ATOM(list);
     LOAD_ATOM(running);
-    LOAD_ATOM(timestamp);    
-    
+    LOAD_ATOM(timestamp);
+    return 0;
+}
+
+
+static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
+{
+    UNUSED(env);
+    UNUSED(load_info);
+    ErlNifResourceFlags tried;
+    ErlNifResourceTypeInit cb;
+    DEBUGF("load%s", "");
 
     cb.dtor = (ErlNifResourceDtor*) midi_dtor;
     cb.stop = (ErlNifResourceStop*) midi_stop;
     cb.down = (ErlNifResourceDown*) midi_down;
     
-    midi_r = enif_open_resource_type_x(env, "midi",
-				       &cb, ERL_NIF_RT_CREATE, &tried);
+    if ((midi_r =
+	 enif_open_resource_type_x(env, "midi",
+				   &cb, ERL_NIF_RT_CREATE,
+				   &tried)) == NULL) {
+	return -1;
+    }
+    if (load_atoms(env) < 0)
+	return -1;
+
     *priv_data = 0;
     return 0;
 }
 
-static int midi_upgrade(ErlNifEnv* env, void** priv_data,
-			void** old_priv_data,
-			ERL_NIF_TERM load_info)
+static int upgrade(ErlNifEnv* env, void** priv_data,
+		   void** old_priv_data,
+		   ERL_NIF_TERM load_info)
 {
     UNUSED(env);
     UNUSED(load_info);
-    DBG("midi_upgrade\r\n");
+    ErlNifResourceFlags tried;    
+    ErlNifResourceTypeInit cb;
+    
+    DEBUGF("upgrade%s", "");
+
+    cb.dtor = (ErlNifResourceDtor*) midi_dtor;
+    cb.stop = (ErlNifResourceStop*) midi_stop;
+    cb.down = (ErlNifResourceDown*) midi_down;
+
+    if ((midi_r = enif_open_resource_type_x(env, "midi", &cb,
+					    ERL_NIF_RT_CREATE|
+					    ERL_NIF_RT_TAKEOVER,
+					    &tried)) == NULL) {
+	return -1;
+    }
+    if (load_atoms(env) < 0)
+	return -1;    
     *priv_data = *old_priv_data;
     return 0;
 }
 
-static void midi_unload(ErlNifEnv* env, void* priv_data)
+static void unload(ErlNifEnv* env, void* priv_data)
 {
     UNUSED(env);
     UNUSED(priv_data);
-
-    DBG("midi_unload\r\n");
+    DEBUGF("unload%s", "");
 }
 
-ERL_NIF_INIT(midi, midi_funcs,
-	     midi_load, NULL,
-	     midi_upgrade, midi_unload)
+ERL_NIF_INIT(midi, nif_funcs, load, NULL, upgrade, unload)

@@ -17,6 +17,7 @@
 -export([bank/3, bank2/3]).
 -export([volume/3, volume2/3]).
 -export([control7/4, control14/5]).
+-export([nrp/4]).
 
 -export([expression/3, expression2/3]).
 
@@ -215,6 +216,16 @@ control14(Synth, Chan, Control, ControlFine, Arg) ->
     write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
 		   0:1,ControlFine:7, 0:1, Arg:7>>).
 
+nrp(Synth, Chan, Param, Value) ->
+    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
+		   ?MIDI_CTRL_NON_REGISTERED_PARAMETER,
+		   ((Param bsr 7) band 16#7f),
+		   ?MIDI_CTRL_NON_REGISTERED_PARAMETER_FINE,
+		   (Param band 16#7f),
+		   ?MIDI_CTRL_DATA_ENTRY,
+		   ((Value bsr 7) band 16#7f),
+		   ?MIDI_CTRL_DATA_ENTRY_FINE,
+		   (Value band 16#7) >>).
 
 program_change(Synth, Chan, Prog) ->
     write(Synth, <<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4,0:1,Prog:7>>).
