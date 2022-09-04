@@ -260,7 +260,7 @@ tparam_set_tempo(TParam=#tparam{ppqn=PPQN}, MPQN) ->
     TParam#tparam{mpqn=MPQN,bpm=BPM,uspp=USPP}.
 
 tparam_set_time_signature(TParam, [NN,DD,CC,BB]) ->
-    {ok, TParam#tparam{sig={NN,(1 bsl DD)},cc=CC,bb=BB}}.
+    TParam#tparam{sig={NN,(1 bsl DD)},cc=CC,bb=BB}.
 
 %% 
 proxy(InputDevice, OutputDevice) ->
