@@ -171,9 +171,6 @@ bank2(Synth, Chan, Bank) when is_integer(Bank), Bank >= 0 ->
 	      ?MIDI_CTRL_BANK_SELECT_FINE, 
 	      Bank).
 
-
-
-
 expression(Synth, Chan, Value) ->
     control7(Synth, Chan, 
 	     ?MIDI_CTRL_EXPRESSION,
@@ -367,7 +364,7 @@ shared_input(Name) ->
 	false ->
 	    {error, enoent};
 	#{output := [Port]} -> %% already connected
-	    case midi:find_device_by_port(Port, Devices) of
+	    case find_device_by_port(Port, Devices) of
 		false ->
 		    {error, port_not_found};  %% maybe closing, retry?
 		Parent ->

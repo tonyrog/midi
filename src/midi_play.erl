@@ -53,7 +53,11 @@ file(File, Device, BPM, Bank) ->
     end.
 
 tracks(Fd, Tracks, BPM, Bank, Division) ->
-    midi:reset_all(Fd, 0),
+    lists:foreach(
+      fun(Chan) ->
+	      midi:all_off(Fd, Chan),
+	      midi:reset_all(Fd, Chan)
+      end, lists:seq(0, 15)),
     if Bank > 0 ->
 	    lists:foreach(
 	      fun(I) -> midi:bank(Fd, I, Bank) end, lists:seq(0, 15));
