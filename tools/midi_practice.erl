@@ -13,8 +13,9 @@
 %% API
 -export([start/0, start/1]). 
 -export([start_lpk25/0]).
+-export([start_vmpk/0]).
 -export([start_usb_midi/0]).
-
+-compile(export_all).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -32,6 +33,18 @@
 -define(TEXT_COLOR,              {0,0,0,0}).       %% black text
 -define(FONT_NAME, "Arial").
 -define(FONT_SIZE, 48).
+-define(SHARP_FONT_SIZE, 14).
+
+-record(lesson,
+	{
+	 type :: random | seq,
+	 pos = 0 :: integer(),
+	 step = 0 :: -1 | 0 | 1,
+	 map_name :: atom(),
+	 choord = "" :: string()  %% curren choord
+	}).
+	 
+	 
 
 -record(state,
 	{
@@ -43,11 +56,15 @@
 	 opts = [],
 	 match = ignore,
 	 seq,
-	 glyph
+	 glyph,
+	 sharp,
+	 g_clef
 	}).
 
-start() -> start([{name,"LPK25"},{lesson,{seq,white_major}}]).
-start_lpk25() -> start([{name,"LPK25"},{lesson,{random,white_major}}]). 
+start() -> start([{name,"LPK25"},{lesson,{raising,major}}]).
+start_lpk25() -> start([{name,"LPK25"},{lesson,{random,minor}}]). 
+start_vmpk() -> start([{name,"VMPK Input"},{lesson,{raising,all}}]).
+     
 start_usb_midi() -> start([{name,"USB-MIDI"},{lesson,{random,white_major}}]).
 
 start(Opts) ->
@@ -91,23 +108,35 @@ start(Opts) ->
 	  ignore.
 init(Opts) ->
     process_flag(trap_exit, true),
-    case find_device(Opts) of
+    case find_input_device(Opts) of
 	{ok, Device} ->
 	    {ok,In}  = midi:open(Device,[event,list,running]),
 	    ok = flush_until_select(In),
 	    Voices = lists:seq(1, 10),
 	    Lesson = proplists:get_value(lesson, Opts, {random,white_major}),
-	    Seq = {_,_,_,Choord} = lesson_first(Lesson),
+	    Seq = #lesson{choord=Choord} = lesson_first(Lesson),
 	    {ok,Font} = epx_font:match([{name,?FONT_NAME},{size,?FONT_SIZE}]),
 	    {W,H}  = epx_font:dimension(Font,"0"),
 	    Ascent = epx:font_info(Font, ascent),
 	    G = {Font,{W,H},Ascent},
-	    io:format("PLAY: ~s\n", [Choord]),
+
+	    {ok,SFont} = epx_font:match([{name,?FONT_NAME},
+					 {slant, italic},
+					 {size,?SHARP_FONT_SIZE}]),
+	    {SW,SH}  = epx_font:dimension(SFont,"#"),
+	    SAscent = epx:font_info(SFont, ascent),
+	    Sharp = {SFont,{SW,SH},SAscent},
+	    %% io:format("PLAY: ~s\n", [Choord]),
+	    {ok,IMG} = epx_image:load(filename:join(code:priv_dir(midi), 
+						    "g_clef.png")),
+	    [GClef|_] = epx_image:pixmaps(IMG),
 	    {ok, #state { midi_in=In, voices=Voices, active=#{}, 
 			  opts = Opts,
 			  seq = Seq,
 			  pressure=#{},
-			  glyph = G
+			  glyph = G,
+			  sharp = Sharp,
+			  g_clef = GClef
 			}};
 	Error ->
 	    {stop, Error}
@@ -229,7 +258,10 @@ draw(Pixels, _Rect, State) ->
 	ignore ->
 	    epx:pixmap_fill(Pixels, grey)
     end,
-    {_,_,_,Choord} = State#state.seq,
+    draw_octave(Pixels, 2),
+    draw_active(Pixels, 2, State#state.active),
+    draw_notes(Pixels, 2, State),
+    #lesson{choord=Choord} = State#state.seq,
     {Font,_WH,Ascent} = State#state.glyph,
     epx_gc:set_font(Font),
     epx_gc:set_foreground_color(?TEXT_COLOR),
@@ -240,14 +272,146 @@ draw(Pixels, _Rect, State) ->
 %%% Internal functions
 %%%===================================================================
 
-find_device(Opts) ->
+-define(WHITE_KEY_WIDTH, 32).
+-define(WHITE_KEY_HEIGHT, 200).
+-define(BLACK_KEY_WIDTH,  trunc(?WHITE_KEY_WIDTH*0.8)).
+-define(BLACK_KEY_HEIGHT, trunc(?WHITE_KEY_HEIGHT*0.6)).
+-define(FINGER_WIDTH, (?BLACK_KEY_WIDTH-2)).
+-define(NUM_OCTAVES, 2).
+-define(NOTE_FIRST, 60).  %% C4
+-define(NOTE_LAST,  (?NOTE_FIRST + 12*?NUM_OCTAVES - 1)).
+-define(NOTE_WIDTH, 20).
+
+draw_octave(Pixels,N) ->
+    X0 = 16*2,
+    Y0 = 250,
+    epx_gc:set_fill_style(solid),
+    epx_gc:set_border_color(black),
+    epx_gc:set_border_width(1),
+    epx_gc:set_fill_color(white),
+    %% draw white
+    lists:foreach(
+	fun(I) ->
+		Y = Y0,
+		X = X0+I*?WHITE_KEY_WIDTH,
+		epx:draw_rectangle(Pixels, X, Y, 
+				   ?WHITE_KEY_WIDTH, ?WHITE_KEY_HEIGHT)
+	end, [I*7+J || I <- lists:seq(0,N-1), J <- [0,1,2,3,4,5,6]]),
+    %% draw black
+    epx_gc:set_fill_color(black),
+    lists:foreach(
+	fun(I) ->
+		Y = Y0,
+		X = X0+I*?WHITE_KEY_WIDTH+(?WHITE_KEY_WIDTH div 2),
+		epx:draw_rectangle(Pixels, X, Y, 
+				   ?BLACK_KEY_WIDTH, ?BLACK_KEY_HEIGHT)
+	end, [I*7+J || I <- lists:seq(0,N-1), J <- [0,1,3,4,5]]),
+    ok.
+
+%% draw active notes
+draw_active(Pixels, N, Active) ->
+    X0 = 16*2,
+    Y0 = 250,
+    epx_gc:set_fill_color(beige),
+    maps:foreach(
+      fun({_Chan,Note},_V) ->
+	      if Note >= ?NOTE_FIRST, Note =< ?NOTE_LAST ->
+		      Nd = Note-?NOTE_FIRST,
+		      Ni = Nd div 12,
+		      {K,Sharp} = note_to_sharp(Nd),
+		      I = Ni*7 + K,
+		      Yoffs = 
+			  if Sharp ->
+				  ?BLACK_KEY_HEIGHT - 2*?FINGER_WIDTH;
+			     true ->
+				  ?WHITE_KEY_HEIGHT - 2*?FINGER_WIDTH
+			  end,
+		      XOffs = 
+			  if Sharp ->
+				  (?WHITE_KEY_WIDTH div 2) +
+				      (?BLACK_KEY_WIDTH-?FINGER_WIDTH) div 2;
+			     true ->
+				  (?WHITE_KEY_WIDTH - ?FINGER_WIDTH) div 2
+			  end,
+		      Y = Y0 + Yoffs,
+		      X = X0+I*?WHITE_KEY_WIDTH + XOffs,
+		      epx:draw_ellipse(Pixels, X, Y, 
+				       ?FINGER_WIDTH, ?FINGER_WIDTH);
+		 true ->
+		      ignore
+	      end
+      end, Active),
+    ok.
+
+draw_notes(Pixels, N, #state{active=Active,
+			     sharp={Font,_WH,Ascent},
+			     g_clef=Gclef}) ->
+    IWidth = 320,
+    IHeight = 628,
+    epx:pixmap_scale_area(Gclef, Pixels, 220, 33, IWidth/4, IHeight/4, [blend]),
+    Step  = 22,
+    Yoffs = 64,
+    Xoffs = 216,
+    epx_gc:set_foreground_color(black),
+    epx_gc:set_line_width(2),
+    epx_gc:set_font(Font),
+    lists:foreach(
+      fun(Y) ->
+	      X0 = Xoffs+80,
+	      X1 = Xoffs+80+100,
+	      epx:draw_line(Pixels, X0, Y, X1, Y)
+      end, [Yoffs+I*Step || I<-lists:seq(0, 5)]),
+    epx_gc:set_border_width(4),
+    epx_gc:set_fill_style(none),
+    epx_gc:set_foreground_color(?TEXT_COLOR),
+    maps:foreach(
+      fun({_Chan,Note},_V) ->
+	      if Note >= ?NOTE_FIRST, Note =< ?NOTE_LAST ->
+		      Nd = Note-?NOTE_FIRST,
+		      Ni = Nd div 12,
+		      {K,Sharp} = note_to_sharp(Nd),
+		      I = Ni*7 + K,
+		      Y = Yoffs + (5*Step - I*Step/2 - ?NOTE_WIDTH/2),
+		      X = Xoffs + 80 + 2*?NOTE_WIDTH,
+		      epx:draw_ellipse(Pixels, X, Y, 
+				       ?NOTE_WIDTH, ?NOTE_WIDTH),
+		      if Sharp ->
+			      epx:draw_string(Pixels, X-10, Y+Ascent, "#");
+			 true ->
+			      ok
+		      end;
+		 true ->
+		      ok
+	      end
+      end, Active).
+
+
+-spec note_to_sharp(N::integer) -> {Key::0..6,Sharp::boolean()}.
+note_to_sharp(N) ->
+    case N rem 12 of
+	0 -> {0,false};
+	1 -> {0,true};
+	2 -> {1,false};
+	3 -> {1,true};
+	4 -> {2,false};
+	5 -> {3,false};
+	6 -> {3,true};
+	7 -> {4,false};
+	8 -> {4,true};
+	9 -> {5,false};
+	10 -> {5,true};
+	11 -> {6,false}
+    end.
+
+
+find_input_device(Opts) ->
     Ds = midi:devices(),
     Name = proplists:get_value(name, Opts, ""),
     case midi:find_device_by_name(Name, Ds) of
 	#{ device := Device } -> 
 	    {ok, Device};
-	#{ output := [Out|_]} ->
-	    case midi:find_device_by_port(Out, Ds) of
+	#{ input := [In|_]} ->
+	    case midi:find_device_by_port(In, Ds) of
 		#{ device := Device } ->
 		    {ok, Device};
 		_ ->
@@ -321,12 +485,10 @@ note_on(Chan,Note,_Velocity,State) ->
 		    Active0 = State#state.active,
 		    Active = Active0# { {Chan,Note} =>  V },
 		    epxw:invalidate(),
-		    {_,_,_,Choord} = State#state.seq,
+		    #lesson{choord=Choord} = State#state.seq,
 		    case test_active(Choord, Active) of
 			true ->
-			    Seq = {_,_,_,Choord1} = 
-				lesson_next(State#state.seq),
-			    io:format("PLAY: ~s\n", [Choord1]),
+			    Seq = lesson_next(State#state.seq),
 			    State#state { match = true,
 					  voices = Vs, active = Active,
 					  seq = Seq };
@@ -349,7 +511,7 @@ note_off(Chan,Note,_Velocity,State) ->
     case maps:take({Chan,Note}, State#state.active) of
 	{V, Active1} ->
 	    Voices = release_voice(V, State#state.voices),
-	    %% io:format("~w: release ~w vs: ~p\n", [{Chan,Note},V,Voices]),
+	    %%%% io:format("~w: release ~w vs: ~p\n", [{Chan,Note},V,Voices]),
 	    State#state { voices = Voices, active = Active1 };
 	error -> %% ignore not pressed
 	    State
@@ -439,50 +601,43 @@ note_to_note_info(N) ->
     {N,Note,Octave,Name}.
 
 
-lesson_first({random,What}) -> lesson_next({random,0,What,""});
-lesson_first({seq,What}) -> lesson_next({seq,-1,What,""}).
+lesson_first({random,What}) -> 
+    lesson_next(#lesson{type=random,map_name=What});
+lesson_first({raising,What}) -> 
+    lesson_next(#lesson{type=seq,pos=-1,step=1,map_name=What});
+lesson_first({falling,What}) -> 
+    lesson_next(#lesson{type=seq,pos=-1,step=-1,map_name=What}).
 
-lesson_next({random,_I,Less,_Choord}) ->
-    L = less(Less),
-    N = maps:size(L),
+lesson_next(L=#lesson{type=random,map_name=Less}) ->
+    Map = less(Less),
+    N = maps:size(Map),
     I = rand:uniform(N),
-    {random,I,Less,maps:get(I, L)};
-lesson_next({seq,I,Less,_Choord}) ->
-    L = less(Less),
-    N = maps:size(L),
-    I1 = (I+1) rem N,
-    {seq,I1,Less,maps:get(I1+1, L)}.
+    Next = maps:get(I, Map),
+    L#lesson{pos=I,choord=Next};
+lesson_next(L=#lesson{type=seq,pos=I,step=S,map_name=Less}) ->
+    Map = less(Less),
+    N = maps:size(Map),
+    I1 = (I+S+N) rem N,
+    Next = maps:get(I1+1, Map),
+    L#lesson{pos=I1,choord=Next}.
 
-less(white_major) -> white_major();
-less(black_major) -> black_major();
-less(major) -> major().
+-define(WHITE_NOTES, ["C","D","E","F","G","A","B"]).
+-define(BLACK_NOTES, ["C#","D#","F#","G#","A#"]).
 
-white_major() ->
-    #{ 1 => "Cmaj",
-       2 => "Dmaj",
-       3 => "Emaj",
-       4 => "Fmaj",
-       5 => "Gmaj",
-       6 => "Amaj",
-       7 => "Bmaj" }.
+-define(WHITE_MAJ, [N++"maj" || N <- ?WHITE_NOTES]).
+-define(WHITE_MIN, [N++"min" || N <- ?WHITE_NOTES]).
+-define(BLACK_MAJ, [N++"maj" || N <- ?BLACK_NOTES]).
+-define(BLACK_MIN, [N++"min" || N <- ?BLACK_NOTES]).
 
-black_major() ->
-    #{ 	1 => "C#maj",
-	2 => "D#maj",
-	3 => "F#maj",
-	4 => "G#maj",
-	5 => "A#maj" }.
+less(white_major) -> notes_to_map(?WHITE_MAJ);
+less(black_major) -> notes_to_map(?BLACK_MAJ);
+less(white_minor) -> notes_to_map(?WHITE_MIN);
+less(black_minor) -> notes_to_map(?BLACK_MIN);
+less(white) -> notes_to_map(?WHITE_MAJ++?WHITE_MIN);
+less(black) -> notes_to_map(?BLACK_MAJ++?BLACK_MIN);
+less(major) -> notes_to_map(?WHITE_MAJ++?BLACK_MAJ);
+less(minor) -> notes_to_map(?WHITE_MIN++?BLACK_MIN);
+less(all) -> notes_to_map(?WHITE_MAJ++?WHITE_MIN++?BLACK_MAJ++?BLACK_MIN).
 
-major() ->
-    #{ 1 => "Cmaj",
-       2 => "Dmaj",
-       3 => "Emaj",
-       4 => "Fmaj",
-       5 => "Gmaj",
-       6 => "Amaj",
-       7 => "Bmaj",
-       8 => "C#maj",
-       9 => "D#maj",
-       10 => "F#maj",
-       11 => "G#maj",
-       12 => "A#maj" }.
+notes_to_map(Ns) ->
+    maps:from_list(lists:zip(lists:seq(1,length(Ns)), Ns)).
