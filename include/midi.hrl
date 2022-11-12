@@ -3,7 +3,7 @@
 -define(_MIDI_H_, true).
 
 %% midi mapping
--define(C, 60).  %% C2
+-define(C, 60).  %% C4
 -define(D, 62).
 -define(E, 64).
 -define(F, 65).

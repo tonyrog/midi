@@ -218,7 +218,7 @@ chordname_to_notes(R,"add9")   -> [R,R+4,R+7,R+14];
 chordname_to_notes(R,"maj7b5") -> [R,R+4,R+6,R+10];
 chordname_to_notes(R,"maj7")   -> [R,R+4,R+7,R+11]; %% 7?
 chordname_to_notes(R,"maj9")   -> [R,R+4,R+7,R+11,R+14];
-chordname_to_notes(R,"min")    ->  [R,R+3,R+7];
+chordname_to_notes(R,"min")    -> [R,R+3,R+7];
 chordname_to_notes(R,"min7")   -> [R,R+3,R+7,R+10];
 chordname_to_notes(R,"min#7")  -> [R,R+3,R+7,R+11];
 chordname_to_notes(R,[$m|Cs]) when Cs =:= []; hd(Cs) =/= $i ->

@@ -1,0 +1,29 @@
+
+Set up fluidsynth and play it from erlang
+
+- load virtual midi channels
+
+    $ sudo modprobe snd-virmidi snd_index=1
+    
+    $ aplaymidi -l
+    $ aconnect -i
+
+- start fluid synth (first stop program using audio!)
+
+    $ fluidsynth --server --audio-driver=alsa -o audio.alsa.device=hw:0 /usr/share/sounds/sf2/FluidR3_GM.sf2
+
+# connect virtual midi input channel to fluid synth
+#    aconnect 24:0 128:0
+#
+#    24:0 is Virtual Raw MIDI 2-0 device /dev/snd/midiC2D0
+#
+#- play music from erlang
+#
+#   > {ok,Fd} = midi:open("/dev/snd/midiC2D0", [event,binary]).
+#   > midi:note_on(Fd, 0, 48, 100).
+#    > midi:note_off(Fd, 0, 48, 100).
+
+    > midi:start().
+    > midi:setup_synth().
+    > midi_abc:play_string("CDEFGABc").
+    
