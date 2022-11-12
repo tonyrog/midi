@@ -12,10 +12,10 @@ LDFLAGS+=-shared
 OBJS = midi_nif.o
 LIBS = 
 
-all: ../priv/$(APP)_nif.so
+all: ../priv/$(APP)_alsa.so
 
-../priv/$(APP)_nif.so: $(OBJS)
-	$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o ../priv/$(APP)_nif.so
+../priv/$(APP)_alsa.so: $(OBJS)
+	$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o ../priv/$(APP)_alsa.so
 
 %.o:	%.c
 	$(CC) $(CFLAGS) -c -fPIC $<
