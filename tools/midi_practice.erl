@@ -174,6 +174,26 @@ make_buttons_([B|Bs], Y, Def) ->
      make_buttons_(Bs, Y+?BUTTON_HEIGHT, Def)];
 make_buttons_([], _Y, _Def) ->
     [].
+
+find_button({X,Y}, State) ->
+    find_button_(X, Y, State#state.buttons).
+find_button_(Bx, By, [#button{id=Id,x=X,y=Y,w=W,h=H}|Bs]) ->
+    if Bx >= X, Bx =< X+W,
+       By >= Y, By =< Y+H -> {ok,Id};
+       true -> find_button_(Bx, By, Bs)
+    end;
+find_button_(_Bx,_By,[]) ->
+    false.
+
+toggle_button(ID, State) ->
+    State#state {buttons = toggle_button_(ID, State#state.buttons)}.
+
+toggle_button_(ID, [B=#button{id=ID,enable=E}|Bs]) ->
+    [B#button { enable = not E} | Bs];
+toggle_button_(ID, [B|Bs]) ->
+    [B|toggle_button_(ID, Bs)];
+toggle_button_(_ID, []) ->
+    [].
     
 %%--------------------------------------------------------------------
 %% @private
@@ -330,14 +350,20 @@ draw(left, Pixels, _Rect, State) ->
       end, State#state.buttons),
     State.
 
-button_press({button_press, left, Pos={Xv,Yv}}, State) ->
+button_press({button_press, [left], Pos={_X,_Y}}, State) ->
     {Xw,Yw} = epxw:view_to_window_pos(Pos),
     X = Xw + ?LEFT_BAR_SIZE,
     if X >= 0, X < ?LEFT_BAR_SIZE ->
-	    io:format("Pos=~w\n", [{X, Yw}]);
+	    io:format("Pos=~w\n", [{X, Yw}]),
+	    case find_button(Pos, State) of
+		false -> State;
+		{ok,ID} -> toggle_button(ID, State)
+	    end;
        true ->
 	    io:format("~w\n", [{X, Yw}])
     end,
+    State;
+button_press(_Event, State) ->
     State.
 
 %%%===================================================================
