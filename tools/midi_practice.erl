@@ -21,7 +21,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3, format_status/2]).
 %% epxw
--export([draw/3]).
+-export([draw/3, draw/4, button_press/2]).
 
 -type chan() :: 0..15.
 -type note() :: 0..127.
@@ -35,6 +35,14 @@
 -define(FONT_SIZE, 48).
 -define(SHARP_FONT_SIZE, 14).
 
+-define(BUTTON_FONT_SIZE, 10).
+-define(BUTTON_HEIGHT, 14).
+-define(LEFT_BAR_SIZE, 64).
+-define(LEFT_BAR_COLOR, orange).
+-define(BUTTON_COLOR, gray).
+-define(BUTTON_SELECTED_COLOR, green).
+
+
 -record(lesson,
 	{
 	 type :: random | seq,
@@ -42,6 +50,17 @@
 	 step = 0 :: -1 | 0 | 1,
 	 map_name :: atom(),
 	 chord = "" :: string()  %% current chord
+	}).
+
+-record(button,
+	{
+	 id :: atom(),
+	 x :: number(),
+	 y :: number(),
+	 w :: number(),
+	 h :: number(),
+	 enable :: boolean(),
+	 name :: string()
 	}).
 
 -record(state,
@@ -56,16 +75,17 @@
 	 quality = 0.0,
 	 chord :: string(), %% current chord if any
 	 seq,
-	 glyph,
-	 sharp,
+	 main_font,
+	 sharp_font,
+	 button_font,
+	 buttons = [] :: [#button{}],
 	 g_clef
 	}).
 
-start() -> start([{name,"LPK25"},{lesson,{raising,major}}]).
-start_lpk25() -> start([{name,"LPK25"},{lesson,{random,minor}}]). 
-start_vmpk() -> start([{name,"VMPK Input"},{lesson,{raising,all}}]).
-     
-start_usb_midi() -> start([{name,"USB-MIDI"},{lesson,{random,white_major}}]).
+start() -> start([{name,"LPK25"}]).
+start_lpk25() -> start([{name,"LPK25"}]). 
+start_vmpk() -> start([{name,"VMPK Input"}]).
+start_usb_midi() -> start([{name,"USB-MIDI"}]).
 
 start(Opts) ->
     application:ensure_all_started(epx),
@@ -79,7 +99,7 @@ start(Opts) ->
 		{scroll_hndl_color, blue},
 		{scroll_bar_size,   14},
 		{scroll_hndl_size,  10},
-		{left_bar,0},
+		{left_bar,?LEFT_BAR_SIZE},
 		{top_bar,0},
 		{right_bar,0},
 		{width, 512},
@@ -113,35 +133,47 @@ init(Opts) ->
 	    {ok,In}  = midi:open(Device,[event,list,running]),
 	    ok = flush_until_select(In),
 	    Voices = lists:seq(1, 10),
-	    Lesson = proplists:get_value(lesson, Opts, {random,white_major}),
-	    Seq = #lesson{chord=_Chord} = lesson_first(Lesson),
 	    {ok,Font} = epx_font:match([{name,?FONT_NAME},{size,?FONT_SIZE}]),
-	    {W,H}  = epx_font:dimension(Font,"0"),
-	    Ascent = epx:font_info(Font, ascent),
-	    G = {Font,{W,H},Ascent},
-
+	    {ok,BFont} = epx_font:match([{name,?FONT_NAME},{size,?BUTTON_FONT_SIZE}]),
 	    {ok,SFont} = epx_font:match([{name,?FONT_NAME},
 					 {slant, italic},
 					 {size,?SHARP_FONT_SIZE}]),
-	    {SW,SH}  = epx_font:dimension(SFont,"#"),
-	    SAscent = epx:font_info(SFont, ascent),
-	    Sharp = {SFont,{SW,SH},SAscent},
 	    %% io:format("PLAY: ~s\n", [Chord]),
 	    {ok,IMG} = epx_image:load(filename:join(code:priv_dir(midi), 
 						    "g_clef.png")),
 	    [GClef|_] = epx_image:pixmaps(IMG),
+
+	    Default = [major,raising],
+	    Buttons = make_buttons([major,minor,sharp,random,raising,falling],
+				  Default),
+
+	    Seq = #lesson{chord=_Chord} = lesson_first({raising,major}),
+
 	    {ok, #state { midi_in=In, voices=Voices, active=#{}, 
 			  opts = Opts,
 			  seq = Seq,
 			  pressure=#{},
-			  glyph = G,
-			  sharp = Sharp,
-			  g_clef = GClef
+			  main_font = {Font,epx:font_info(Font, ascent)},
+			  sharp_font = {SFont,epx:font_info(SFont, ascent)},
+			  button_font = {BFont,epx:font_info(BFont, ascent)},
+			  g_clef = GClef,
+			  buttons = Buttons 
 			}};
 	Error ->
 	    {stop, Error}
     end.
 
+make_buttons(Bs, Def) ->
+    make_buttons_(Bs, 32, Def).
+
+make_buttons_([B|Bs], Y, Def) ->
+    Enable = lists:member(B, Def),
+    Name = string:substr(string:titlecase(atom_to_list(B)),1,3),
+    [#button{id=B,y=Y+2,h=?BUTTON_HEIGHT-4,x=4,w=?LEFT_BAR_SIZE-8,
+	     enable=Enable,name=Name} |
+     make_buttons_(Bs, Y+?BUTTON_HEIGHT, Def)];
+make_buttons_([], _Y, _Def) ->
+    [].
     
 %%--------------------------------------------------------------------
 %% @private
@@ -262,11 +294,11 @@ draw(Pixels, _Rect, State) ->
     draw_active(Pixels, 2, State#state.active),
     draw_notes(Pixels, 2, State),
     #lesson{chord=Chord} = State#state.seq,
-    {Font,_WH,Ascent} = State#state.glyph,
+    {Font,Ascent} = State#state.main_font,
     epx_gc:set_font(Font),
     epx_gc:set_foreground_color(?TEXT_COLOR),
     epx:draw_string(Pixels, 32, 64+Ascent, Chord),
-    {SFont,_SWH,SAscent} = State#state.sharp,
+    {SFont,SAscent} = State#state.sharp_font,
     epx_gc:set_font(SFont),
     epx_gc:set_foreground_color(?TEXT_COLOR),
     epx:draw_string(Pixels, 32, 164+SAscent, State#state.chord),
@@ -275,6 +307,36 @@ draw(Pixels, _Rect, State) ->
 			    "Q="++integer_to_list(trunc(State#state.quality))++"%");
        true ->
 	    ok
+    end,
+    State.
+
+%% draw left bar (practice selection)
+draw(left, Pixels, _Rect, State) ->
+    {BFont,Ascent} = State#state.button_font,
+    Height = epx:pixmap_info(Pixels, height),
+    epx:pixmap_fill_area(Pixels, 0, 0, ?LEFT_BAR_SIZE, Height, 
+			 ?LEFT_BAR_COLOR),
+    epx_gc:set_font(BFont),
+    epx_gc:set_foreground_color(?TEXT_COLOR),
+    epx_gc:set_fill_style(solid),
+    epx_gc:set_fill_color(?BUTTON_COLOR),
+    epx_gc:set_border_color(?BUTTON_SELECTED_COLOR),
+    lists:foreach(
+      fun(#button{enable=E,x=X,y=Y,w=W,h=H,name=Name}) ->
+	      epx_gc:set_border_width(if E -> 2; true -> 0 end),
+	      {Wi,_Hi} = epx_font:dimension(BFont, Name),
+	      epx:draw_rectangle(Pixels,X,Y,W,H),
+	      epx:draw_string(Pixels,X+((W-Wi) div 2), Y+Ascent, Name)
+      end, State#state.buttons),
+    State.
+
+button_press({button_press, left, Pos={Xv,Yv}}, State) ->
+    {Xw,Yw} = epxw:view_to_window_pos(Pos),
+    X = Xw + ?LEFT_BAR_SIZE,
+    if X >= 0, X < ?LEFT_BAR_SIZE ->
+	    io:format("Pos=~w\n", [{X, Yw}]);
+       true ->
+	    io:format("~w\n", [{X, Yw}])
     end,
     State.
 
@@ -354,7 +416,7 @@ draw_active(Pixels, N, Active) ->
     ok.
 
 draw_notes(Pixels, N, #state{active=Active,
-			     sharp={Font,_WH,Ascent},
+			     sharp_font={Font,Ascent},
 			     g_clef=Gclef}) ->
     IWidth = 320,
     IHeight = 628,
@@ -702,6 +764,6 @@ maps_foreach(Fun, Map) ->
 	ok -> ok
     catch
 	error:undef ->
-	    maps:fold(fun(K,V,_) -> Fun(K,V) end, Map),
+	    maps:fold(fun(K,V,_) -> Fun(K,V) end, [], Map),
 	    ok
     end.
