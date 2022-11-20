@@ -35,9 +35,9 @@
 -define(FONT_SIZE, 48).
 -define(SHARP_FONT_SIZE, 14).
 
--define(BUTTON_FONT_SIZE, 10).
--define(BUTTON_HEIGHT, 14).
--define(LEFT_BAR_SIZE, 64).
+-define(BUTTON_FONT_SIZE, 12).
+-define(BUTTON_HEIGHT, 18).
+-define(LEFT_BAR_SIZE, 80).
 -define(LEFT_BAR_COLOR, orange).
 -define(BUTTON_COLOR, gray).
 -define(BUTTON_SELECTED_COLOR, green).
@@ -70,6 +70,8 @@
 	 voices :: [voice()],
 	 active = #{} :: #{ {chan(),note()} => voice() },
 	 pressure = #{} :: #{ chan() => pressure() },
+	 tick = 1000,
+	 tick_voice_id,
 	 opts = [],
 	 match = ignore,
 	 quality = 0.0,
@@ -90,6 +92,7 @@ start_usb_midi() -> start([{name,"USB-MIDI"}]).
 start(Opts) ->
     application:ensure_all_started(epx),
     application:ensure_all_started(midi),
+    alsa_play:start(),
     epxw:start(?MODULE,
 	       Opts,
 	       [{title, "Midi Practice"},
@@ -128,40 +131,52 @@ start(Opts) ->
 	  ignore.
 init(Opts) ->
     process_flag(trap_exit, true),
-    case find_input_device(Opts) of
-	{ok, Device} ->
-	    {ok,In}  = midi:open(Device,[event,list,running]),
-	    ok = flush_until_select(In),
-	    Voices = lists:seq(1, 10),
-	    {ok,Font} = epx_font:match([{name,?FONT_NAME},{size,?FONT_SIZE}]),
-	    {ok,BFont} = epx_font:match([{name,?FONT_NAME},{size,?BUTTON_FONT_SIZE}]),
-	    {ok,SFont} = epx_font:match([{name,?FONT_NAME},
-					 {slant, italic},
-					 {size,?SHARP_FONT_SIZE}]),
-	    %% io:format("PLAY: ~s\n", [Chord]),
-	    {ok,IMG} = epx_image:load(filename:join(code:priv_dir(midi), 
-						    "g_clef.png")),
-	    [GClef|_] = epx_image:pixmaps(IMG),
+    In = case find_input_device(Opts) of
+	     {ok, Device} ->
+		 {ok,Fd}  = midi:open(Device,[event,list,running]),
+		 ok = flush_until_select(Fd),
+		 Fd;
+	     {error, Err} ->
+		 io:format("midi:open error ~p\n", [Err]),
+		 undefined
+	 end,
+    Voices = lists:seq(1, 10),
+    {ok,Font} = epx_font:match([{name,?FONT_NAME},{size,?FONT_SIZE}]),
+    {ok,BFont} = epx_font:match([{name,?FONT_NAME},{size,?BUTTON_FONT_SIZE}]),
+    {ok,SFont} = epx_font:match([{name,?FONT_NAME},
+				 {slant, italic},
+				 {size,?SHARP_FONT_SIZE}]),
+    %% io:format("PLAY: ~s\n", [Chord]),
+    {ok,IMG} = epx_image:load(filename:join(code:priv_dir(midi), 
+					    "g_clef.png")),
+    [GClef|_] = epx_image:pixmaps(IMG),
+    
+    Default = [major,raising],
+    Buttons = make_buttons([major,minor,sharp,random,raising,falling],
+			   Default),
 
-	    Default = [major,raising],
-	    Buttons = make_buttons([major,minor,sharp,random,raising,falling],
-				  Default),
+    Seq = #lesson{chord=_Chord} = lesson_first({raising,major}),
+    
+    VoiceID = alsa_play:alloc(),
+    alsa_play:append_file(VoiceID, 0,
+			  filename:join([code:lib_dir(midi),"tools",
+					 "click1.wav"])),
+    alsa_play:mark(VoiceID, last, [stop], []),
+    Tick = proplists:get_value(tick, Opts, 1000),
+    erlang:start_timer(Tick, self(), tick),
 
-	    Seq = #lesson{chord=_Chord} = lesson_first({raising,major}),
-
-	    {ok, #state { midi_in=In, voices=Voices, active=#{}, 
-			  opts = Opts,
-			  seq = Seq,
-			  pressure=#{},
-			  main_font = {Font,epx:font_info(Font, ascent)},
-			  sharp_font = {SFont,epx:font_info(SFont, ascent)},
-			  button_font = {BFont,epx:font_info(BFont, ascent)},
-			  g_clef = GClef,
-			  buttons = Buttons 
-			}};
-	Error ->
-	    {stop, Error}
-    end.
+    {ok, #state { midi_in=In, voices=Voices, active=#{}, 
+		  opts = Opts,
+		  seq = Seq,
+		  tick = Tick,
+		  tick_voice_id = VoiceID,
+		  pressure=#{},
+		  main_font = {Font,epx:font_info(Font, ascent)},
+		  sharp_font = {SFont,epx:font_info(SFont, ascent)},
+		  button_font = {BFont,epx:font_info(BFont, ascent)},
+		  g_clef = GClef,
+		  buttons = Buttons 
+		}}.
 
 make_buttons(Bs, Def) ->
     make_buttons_(Bs, 32, Def).
@@ -169,9 +184,10 @@ make_buttons(Bs, Def) ->
 make_buttons_([B|Bs], Y, Def) ->
     Enable = lists:member(B, Def),
     Name = string:substr(string:titlecase(atom_to_list(B)),1,3),
-    [#button{id=B,y=Y+2,h=?BUTTON_HEIGHT-4,x=4,w=?LEFT_BAR_SIZE-8,
-	     enable=Enable,name=Name} |
-     make_buttons_(Bs, Y+?BUTTON_HEIGHT, Def)];
+    But = #button{id=B,y=Y+2,h=?BUTTON_HEIGHT-4,x=4,w=?LEFT_BAR_SIZE-8,
+		  enable=Enable,name=Name},
+    io:format("button ~w: ~p\n", [B, But]),
+    [But | make_buttons_(Bs, Y+?BUTTON_HEIGHT, Def)];
 make_buttons_([], _Y, _Def) ->
     [].
 
@@ -256,6 +272,14 @@ handle_info({midi,In,Event}, State) when In =:= State#state.midi_in ->
 handle_info({midi,In,Event,_Delta}, State) when In =:= State#state.midi_in ->
     State1 = midi_event(Event, State),
     {noreply, midi_next(State1)};
+handle_info({timeout, _Ref, tick}, State) ->
+    %% io:format("tick\n"),
+    alsa_play:restart(State#state.tick_voice_id),
+    alsa_play:run(State#state.tick_voice_id),
+    alsa_play:resume(),
+    erlang:start_timer(State#state.tick, self(), tick),
+    {noreply, State};
+    
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -351,18 +375,20 @@ draw(left, Pixels, _Rect, State) ->
     State.
 
 button_press({button_press, [left], Pos={_X,_Y}}, State) ->
-    {Xw,Yw} = epxw:view_to_window_pos(Pos),
-    X = Xw + ?LEFT_BAR_SIZE,
-    if X >= 0, X < ?LEFT_BAR_SIZE ->
-	    io:format("Pos=~w\n", [{X, Yw}]),
-	    case find_button(Pos, State) of
-		false -> State;
-		{ok,ID} -> toggle_button(ID, State)
+    WPos = {Xw,_Yw} = epxw:view_to_window_pos(Pos),
+    if Xw >= 0, Xw < ?LEFT_BAR_SIZE ->
+	    case find_button(WPos, State) of
+		false ->
+		    io:format("nothing found @Pos=~w\n", [WPos]),
+		    State;
+		{ok,ID} ->
+		    io:format("found button ~p\n", [ID]),
+		    toggle_button(ID, State)
 	    end;
        true ->
-	    io:format("~w\n", [{X, Yw}])
-    end,
-    State;
+	    io:format("~w\n", [WPos]),
+	    State
+    end;
 button_press(_Event, State) ->
     State.
 
@@ -407,7 +433,7 @@ draw_octave(Pixels,N) ->
     ok.
 
 %% draw active notes
-draw_active(Pixels, N, Active) ->
+draw_active(Pixels, _N, Active) ->
     X0 = 16*2,
     Y0 = 250,
     epx_gc:set_fill_color(beige),
@@ -441,7 +467,7 @@ draw_active(Pixels, N, Active) ->
       end, Active),
     ok.
 
-draw_notes(Pixels, N, #state{active=Active,
+draw_notes(Pixels, _N, #state{active=Active,
 			     sharp_font={Font,Ascent},
 			     g_clef=Gclef}) ->
     IWidth = 320,
@@ -640,10 +666,10 @@ match_chord(MatchChord, Active) ->
     NTs = maps:fold(fun({_Chan,Note},{_V,Ts},Acc) -> [{Note,Ts}|Acc] end, 
 		    [], Active),
     NTs1 = normalize_notes(NTs),
-    Ns1 = [N || {N,T} <- NTs1],
+    Ns1 = [N || {N,_T} <- NTs1],
 
     %% check the chord time diff
-    Ts1 = [T || {N,T} <- NTs1],
+    Ts1 = [T || {_N,T} <- NTs1],
     Tmin = lists:min(Ts1),
     Tmax = lists:max(Ts1),
     Td = ((Tmax-Tmin)/1000),  %% ok round 100 ms? 
