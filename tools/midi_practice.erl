@@ -42,6 +42,7 @@
 -define(BUTTON_COLOR, gray).
 -define(BUTTON_SELECTED_COLOR, green).
 
+-define(DEFAULT_BPM, 120).
 
 -record(lesson,
 	{
@@ -70,7 +71,7 @@
 	 voices :: [voice()],
 	 active = #{} :: #{ {chan(),note()} => voice() },
 	 pressure = #{} :: #{ chan() => pressure() },
-	 tick = 1000,
+	 bpm = ?DEFAULT_BPM,
 	 tick_voice_id,
 	 opts = [],
 	 match = ignore,
@@ -160,15 +161,16 @@ init(Opts) ->
     VoiceID = alsa_play:alloc(),
     alsa_play:append_file(VoiceID, 0,
 			  filename:join([code:lib_dir(midi),"tools",
-					 "click1.wav"])),
+					 "click2.wav"])),
     alsa_play:mark(VoiceID, last, [stop], []),
-    Tick = proplists:get_value(tick, Opts, 1000),
-    erlang:start_timer(Tick, self(), tick),
+    Bpm = proplists:get_value(bpm, Opts, ?DEFAULT_BPM),
+    Time = round(60000 / Bpm),
+    erlang:start_timer(Time, self(), tick),
 
     {ok, #state { midi_in=In, voices=Voices, active=#{}, 
 		  opts = Opts,
 		  seq = Seq,
-		  tick = Tick,
+		  bpm = Bpm,
 		  tick_voice_id = VoiceID,
 		  pressure=#{},
 		  main_font = {Font,epx:font_info(Font, ascent)},
@@ -277,7 +279,8 @@ handle_info({timeout, _Ref, tick}, State) ->
     alsa_play:restart(State#state.tick_voice_id),
     alsa_play:run(State#state.tick_voice_id),
     alsa_play:resume(),
-    erlang:start_timer(State#state.tick, self(), tick),
+    Time = round(60000 / State#state.bpm),
+    erlang:start_timer(Time, self(), tick),
     {noreply, State};
     
 handle_info(_Info, State) ->
