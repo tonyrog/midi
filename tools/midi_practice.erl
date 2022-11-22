@@ -42,7 +42,8 @@
 -define(BUTTON_COLOR, gray).
 -define(BUTTON_SELECTED_COLOR, green).
 
--define(DEFAULT_BPM, 120).
+-define(DEFAULT_BPM,  80).
+-define(DEFAULT_BEATS, 4).
 
 -record(lesson,
 	{
@@ -68,11 +69,17 @@
 	{
 	 midi_in,      %% midi input device
 	 pending = 0,  %% number of pending events
-	 voices :: [voice()],
+	 voices :: [voice()],   %% pressed keys
 	 active = #{} :: #{ {chan(),note()} => voice() },
 	 pressure = #{} :: #{ chan() => pressure() },
 	 bpm = ?DEFAULT_BPM,
+	 beats = ?DEFAULT_BEATS,
+	 clock,           %% clock timer
+	 next_clock_tick, %% clock when next tick is expected
+	 beat_count = 1,
+	 milli_to_beat,
 	 tick_voice_id,
+	 beat_voice_id,
 	 opts = [],
 	 match = ignore,
 	 quality = 0.0,
@@ -158,20 +165,32 @@ init(Opts) ->
 
     Seq = #lesson{chord=_Chord} = lesson_first({raising,major}),
     
-    VoiceID = alsa_play:alloc(),
-    alsa_play:append_file(VoiceID, 0,
+    TickVoiceID = alsa_play:alloc(),
+    alsa_play:append_file(TickVoiceID, 0,
 			  filename:join([code:lib_dir(midi),"tools",
-					 "click2.wav"])),
-    alsa_play:mark(VoiceID, last, [stop], []),
+					 "Clunk Closed.wav"])),
+    BeatVoiceID = alsa_play:alloc(),
+    alsa_play:append_file(BeatVoiceID, 0,
+			  filename:join([code:lib_dir(midi),"tools",
+					 "Tight Snare.wav"])),
+
+    Clock = erlang:start_timer(16#ffffffff, undefined, undefined),
     Bpm = proplists:get_value(bpm, Opts, ?DEFAULT_BPM),
-    Time = round(60000 / Bpm),
-    erlang:start_timer(Time, self(), tick),
+    MilliToBeat = round(60000 / Bpm),
+    io:format("ms=~w\n", [MilliToBeat]),
+    erlang:start_timer(MilliToBeat, self(), tick),
+    ClockTick = erlang:read_timer(Clock),
 
     {ok, #state { midi_in=In, voices=Voices, active=#{}, 
 		  opts = Opts,
 		  seq = Seq,
 		  bpm = Bpm,
-		  tick_voice_id = VoiceID,
+		  milli_to_beat = MilliToBeat,
+		  clock = Clock,
+		  beat_count = 1,
+		  next_clock_tick = ClockTick - MilliToBeat,  %% remain!
+		  tick_voice_id = TickVoiceID,
+		  beat_voice_id = BeatVoiceID,
 		  pressure=#{},
 		  main_font = {Font,epx:font_info(Font, ascent)},
 		  sharp_font = {SFont,epx:font_info(SFont, ascent)},
@@ -275,13 +294,30 @@ handle_info({midi,In,Event,_Delta}, State) when In =:= State#state.midi_in ->
     State1 = midi_event(Event, State),
     {noreply, midi_next(State1)};
 handle_info({timeout, _Ref, tick}, State) ->
-    %% io:format("tick\n"),
-    alsa_play:restart(State#state.tick_voice_id),
-    alsa_play:run(State#state.tick_voice_id),
+    Beat1 = case State#state.beat_count of
+		Beat when Beat =:= State#state.beats ->
+		    alsa_play:restart(State#state.tick_voice_id),
+		    alsa_play:restart(State#state.beat_voice_id),
+		    alsa_play:run(State#state.tick_voice_id),
+		    alsa_play:run(State#state.beat_voice_id),
+		    io:format("beat: ~w\n",[Beat]),
+		    1;
+		Beat ->
+		    alsa_play:restart(State#state.tick_voice_id),
+		    alsa_play:run(State#state.tick_voice_id),
+		    io:format("tick ~w\n", [Beat]),
+		    Beat+1
+	    end,
     alsa_play:resume(),
-    Time = round(60000 / State#state.bpm),
-    erlang:start_timer(Time, self(), tick),
-    {noreply, State};
+    ClockTick = erlang:read_timer(State#state.clock),
+    MilliToBeat = State#state.milli_to_beat,
+    NextClockTick = State#state.next_clock_tick,
+    Delta = NextClockTick - ClockTick,
+    io:format("ms=~w,delta=~w\n", [MilliToBeat-Delta,Delta]),
+    erlang:start_timer(MilliToBeat-Delta, self(), tick),
+    {noreply, State#state{beat_count=Beat1,
+			  next_clock_tick = NextClockTick-MilliToBeat
+			 }};
     
 handle_info(_Info, State) ->
     {noreply, State}.
