@@ -42,8 +42,8 @@
 -define(BUTTON_COLOR, gray).
 -define(BUTTON_SELECTED_COLOR, green).
 
--define(DEFAULT_BPM,  80).
--define(DEFAULT_BEATS, 4).
+-define(DEFAULT_BPM,     60).
+-define(DEFAULT_DIVISION, 4).  %% each tick is divided 
 
 -record(lesson,
 	{
@@ -68,18 +68,23 @@
 -record(state,
 	{
 	 midi_in,      %% midi input device
+	 midi_out,     %% output synth
 	 pending = 0,  %% number of pending events
 	 voices :: [voice()],   %% pressed keys
 	 active = #{} :: #{ {chan(),note()} => voice() },
 	 pressure = #{} :: #{ chan() => pressure() },
 	 bpm = ?DEFAULT_BPM,
-	 beats = ?DEFAULT_BEATS,
+	 division = ?DEFAULT_DIVISION,  %% 2*3 = 12
+	 beat  = {0,1,0,1},
+	 base  = {1,0,0,0},
+	 snare = {0,0,1,0},
 	 clock,           %% clock timer
 	 next_clock_tick, %% clock when next tick is expected
-	 beat_count = 1,
-	 milli_to_beat,
-	 tick_voice_id,
+	 count = 1,       %% division count 1..division
+	 milli_to_div,
 	 beat_voice_id,
+	 base_voice_id,
+	 snare_voice_id,
 	 opts = [],
 	 match = ignore,
 	 quality = 0.0,
@@ -148,6 +153,7 @@ init(Opts) ->
 		 io:format("midi:open error ~p\n", [Err]),
 		 undefined
 	 end,
+    {ok, Out} = midi:open_synth(),
     Voices = lists:seq(1, 10),
     {ok,Font} = epx_font:match([{name,?FONT_NAME},{size,?FONT_SIZE}]),
     {ok,BFont} = epx_font:match([{name,?FONT_NAME},{size,?BUTTON_FONT_SIZE}]),
@@ -165,32 +171,41 @@ init(Opts) ->
 
     Seq = #lesson{chord=_Chord} = lesson_first({raising,major}),
     
-    TickVoiceID = alsa_play:alloc(),
-    alsa_play:append_file(TickVoiceID, 0,
-			  filename:join([code:lib_dir(midi),"tools",
-					 "Clunk Closed.wav"])),
     BeatVoiceID = alsa_play:alloc(),
     alsa_play:append_file(BeatVoiceID, 0,
 			  filename:join([code:lib_dir(midi),"tools",
+					 "Clunk Closed.wav"])),
+    SnareVoiceID = alsa_play:alloc(),
+    alsa_play:append_file(SnareVoiceID, 0,
+			  filename:join([code:lib_dir(midi),"tools",
 					 "Tight Snare.wav"])),
 
+    BaseVoiceID = alsa_play:alloc(),
+    alsa_play:append_file(BaseVoiceID, 0,
+			  filename:join([code:lib_dir(midi),"tools",
+					 "Breathe Kick.wav"])),
+    Division = proplists:get_value(division, Opts, ?DEFAULT_DIVISION),
     Clock = erlang:start_timer(16#ffffffff, undefined, undefined),
     Bpm = proplists:get_value(bpm, Opts, ?DEFAULT_BPM),
-    MilliToBeat = round(60000 / Bpm),
-    io:format("ms=~w\n", [MilliToBeat]),
-    erlang:start_timer(MilliToBeat, self(), tick),
+    MilliToDiv = round((60000 / Bpm)/Division),
+    io:format("ms=~w\n", [MilliToDiv]),
+    erlang:start_timer(MilliToDiv, self(), tick),
     ClockTick = erlang:read_timer(Clock),
+    alsa_play:resume(),
 
     {ok, #state { midi_in=In, voices=Voices, active=#{}, 
+		  midi_out=Out,
 		  opts = Opts,
 		  seq = Seq,
 		  bpm = Bpm,
-		  milli_to_beat = MilliToBeat,
+		  division = Division,
+		  milli_to_div = MilliToDiv,
 		  clock = Clock,
-		  beat_count = 1,
-		  next_clock_tick = ClockTick - MilliToBeat,  %% remain!
-		  tick_voice_id = TickVoiceID,
+		  count = 1,
+		  next_clock_tick = ClockTick - MilliToDiv,  %% remain!
 		  beat_voice_id = BeatVoiceID,
+		  base_voice_id = BaseVoiceID,
+		  snare_voice_id = SnareVoiceID,
 		  pressure=#{},
 		  main_font = {Font,epx:font_info(Font, ascent)},
 		  sharp_font = {SFont,epx:font_info(SFont, ascent)},
@@ -289,34 +304,42 @@ handle_info({select,In,undefined,ready_input}, State) when
     end;
 handle_info({midi,In,Event}, State) when In =:= State#state.midi_in ->
     State1 = midi_event(Event, State),
+    midi:write(State#state.midi_out, midi_codec:event_encode(Event)),
     {noreply, midi_next(State1)};
 handle_info({midi,In,Event,_Delta}, State) when In =:= State#state.midi_in ->
     State1 = midi_event(Event, State),
+    midi:write(State#state.midi_out, midi_codec:event_encode(Event)),
     {noreply, midi_next(State1)};
 handle_info({timeout, _Ref, tick}, State) ->
-    Beat1 = case State#state.beat_count of
-		Beat when Beat =:= State#state.beats ->
-		    alsa_play:restart(State#state.tick_voice_id),
-		    alsa_play:restart(State#state.beat_voice_id),
-		    alsa_play:run(State#state.tick_voice_id),
-		    alsa_play:run(State#state.beat_voice_id),
-		    io:format("beat: ~w\n",[Beat]),
-		    1;
-		Beat ->
-		    alsa_play:restart(State#state.tick_voice_id),
-		    alsa_play:run(State#state.tick_voice_id),
-		    io:format("tick ~w\n", [Beat]),
-		    Beat+1
-	    end,
-    alsa_play:resume(),
+    Count = State#state.count,
+    Size  = tuple_size(State#state.beat),
+    case element(Count, State#state.beat) of
+	0 -> ok;
+	_ -> 
+	    alsa_play:restart(State#state.beat_voice_id),
+	    alsa_play:run(State#state.beat_voice_id)
+    end,
+    case element(Count, State#state.base) of
+	0 -> ok;
+	_ ->
+	    alsa_play:restart(State#state.base_voice_id),
+	    alsa_play:run(State#state.base_voice_id)
+    end,
+    case element(Count, State#state.snare) of
+	0 -> ok;
+	_ -> alsa_play:restart(State#state.snare_voice_id),
+	     alsa_play:run(State#state.snare_voice_id)
+    end,
+
+
     ClockTick = erlang:read_timer(State#state.clock),
-    MilliToBeat = State#state.milli_to_beat,
+    MilliToDiv = State#state.milli_to_div,
     NextClockTick = State#state.next_clock_tick,
     Delta = NextClockTick - ClockTick,
-    io:format("ms=~w,delta=~w\n", [MilliToBeat-Delta,Delta]),
-    erlang:start_timer(MilliToBeat-Delta, self(), tick),
-    {noreply, State#state{beat_count=Beat1,
-			  next_clock_tick = NextClockTick-MilliToBeat
+    io:format("ms=~w,delta=~w\n", [MilliToDiv-Delta,Delta]),
+    erlang:start_timer(MilliToDiv-Delta, self(), tick),
+    {noreply, State#state{count=(Count rem Size)+1,
+			  next_clock_tick = NextClockTick-MilliToDiv
 			 }};
     
 handle_info(_Info, State) ->
