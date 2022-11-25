@@ -42,8 +42,8 @@
 -define(BUTTON_COLOR, gray).
 -define(BUTTON_SELECTED_COLOR, green).
 
--define(DEFAULT_BPM,     60).
--define(DEFAULT_DIVISION, 4).  %% each tick is divided 
+-define(DEFAULT_BPM,     80).  %% quarter note
+-define(DEFAULT_DIVISION, 4).  %% resulution 4 ticks per quater note 1/16
 
 -record(lesson,
 	{
@@ -74,10 +74,11 @@
 	 active = #{} :: #{ {chan(),note()} => voice() },
 	 pressure = #{} :: #{ chan() => pressure() },
 	 bpm = ?DEFAULT_BPM,
-	 division = ?DEFAULT_DIVISION,  %% 2*3 = 12
-	 beat  = {0,1,0,1},
-	 base  = {1,0,0,0},
-	 snare = {0,0,1,0},
+	 division = ?DEFAULT_DIVISION,
+	 %% div = 4 then the start on each group is a quarter note
+	 beat  = {1,0,1,0,  1,0,1,0, 1,0,1,0, 1,0,1,0},
+	 base  = {1,0,0,0,  0,0,0,1, 1,0,0,0, 0,0,0,0},
+	 snare = {0,0,0,0,  1,0,0,0, 0,0,0,0, 1,0,0,0},
 	 clock,           %% clock timer
 	 next_clock_tick, %% clock when next tick is expected
 	 count = 1,       %% division count 1..division
@@ -105,7 +106,7 @@ start_usb_midi() -> start([{name,"USB-MIDI"}]).
 start(Opts) ->
     application:ensure_all_started(epx),
     application:ensure_all_started(midi),
-    alsa_play:start(),
+    alsa_play:start(#{ channels => 2 }),
     epxw:start(?MODULE,
 	       Opts,
 	       [{title, "Midi Practice"},
@@ -188,7 +189,7 @@ init(Opts) ->
     Clock = erlang:start_timer(16#ffffffff, undefined, undefined),
     Bpm = proplists:get_value(bpm, Opts, ?DEFAULT_BPM),
     MilliToDiv = round((60000 / Bpm)/Division),
-    io:format("ms=~w\n", [MilliToDiv]),
+    %% io:format("ms=~w\n", [MilliToDiv]),
     erlang:start_timer(MilliToDiv, self(), tick),
     ClockTick = erlang:read_timer(Clock),
     alsa_play:resume(),
@@ -313,35 +314,39 @@ handle_info({midi,In,Event,_Delta}, State) when In =:= State#state.midi_in ->
 handle_info({timeout, _Ref, tick}, State) ->
     Count = State#state.count,
     Size  = tuple_size(State#state.beat),
-    case element(Count, State#state.beat) of
-	0 -> ok;
-	_ -> 
-	    alsa_play:restart(State#state.beat_voice_id),
-	    alsa_play:run(State#state.beat_voice_id)
-    end,
-    case element(Count, State#state.base) of
-	0 -> ok;
-	_ ->
-	    alsa_play:restart(State#state.base_voice_id),
-	    alsa_play:run(State#state.base_voice_id)
-    end,
-    case element(Count, State#state.snare) of
-	0 -> ok;
-	_ -> alsa_play:restart(State#state.snare_voice_id),
-	     alsa_play:run(State#state.snare_voice_id)
-    end,
-
+    IDList = 
+	case element(Count, State#state.beat) of
+	    0 -> [];
+	    _ -> [State#state.beat_voice_id]
+	end ++
+	case element(Count, State#state.base) of
+	    0 -> [];
+	    _ -> [State#state.base_voice_id]
+	end ++
+	case element(Count, State#state.snare) of
+	    0 -> [];
+	    _ -> [State#state.snare_voice_id]
+	end,
+    
+    alsa_play:restart(IDList),
+    alsa_play:run(IDList),
 
     ClockTick = erlang:read_timer(State#state.clock),
     MilliToDiv = State#state.milli_to_div,
     NextClockTick = State#state.next_clock_tick,
     Delta = NextClockTick - ClockTick,
-    io:format("ms=~w,delta=~w\n", [MilliToDiv-Delta,Delta]),
-    erlang:start_timer(MilliToDiv-Delta, self(), tick),
-    {noreply, State#state{count=(Count rem Size)+1,
-			  next_clock_tick = NextClockTick-MilliToDiv
-			 }};
-    
+    %% io:format("ms=~w,delta=~w\n", [MilliToDiv-Delta,Delta]),
+    if Delta < MilliToDiv, Delta < 20 -> 
+	    erlang:start_timer(MilliToDiv-Delta, self(), tick),
+	    {noreply, State#state{count=(Count rem Size)+1,
+				  next_clock_tick = NextClockTick-MilliToDiv
+				 }};
+       true -> %% too long delay - adjust 
+	    erlang:start_timer(MilliToDiv, self(), tick),
+	    {noreply, State#state{count=(Count rem Size)+1,
+				  next_clock_tick = ClockTick-MilliToDiv
+				 }}
+    end;
 handle_info(_Info, State) ->
     {noreply, State}.
 
