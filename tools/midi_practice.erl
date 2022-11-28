@@ -76,16 +76,31 @@
 	 bpm = ?DEFAULT_BPM,
 	 division = ?DEFAULT_DIVISION,
 	 %% div = 4 then the start on each group is a quarter note
-	 beat  = {1,0,1,0,  1,0,1,0, 1,0,1,0, 1,0,1,0},
-	 base  = {1,0,0,0,  0,0,0,1, 1,0,0,0, 0,0,0,0},
-	 snare = {0,0,0,0,  1,0,0,0, 0,0,0,0, 1,0,0,0},
+	 closed_hi_hat = {1,0,1,0,  1,0,1,0, 1,0,1,0, 1,0,1,0},
+	 open_hi_hat   = {0,0,0,0,  0,0,0,1, 0,0,0,0, 0,0,0,0},
+	 bass_drum     = {1,0,0,0,  0,0,0,1, 1,0,0,0, 0,0,0,0},
+	 snare_drum    = {0,0,0,0,  1,0,0,0, 0,0,0,0, 1,0,0,0},
+
+	 id_closed_hi_hat,
+	 id_open_hi_hat,
+	 id_bass_drum,
+	 id_snare_drum,
+
+	 %% drum => ID, [ ID => drum  whem allocated ]
+	 drums = #{ drum_list => [closed_hi_hat, open_hi_hat,
+				  bass_drum, snare_drum ],
+		    closed_hi_hat => undefined,
+		    open_hi_hat => undefined,
+		    bass_drum => undefined,
+		    snare_drum => undefined },
+
+	 drum_map = #{},  %% drum name => voice id
+
 	 clock,           %% clock timer
 	 next_clock_tick, %% clock when next tick is expected
 	 count = 1,       %% division count 1..division
 	 milli_to_div,
-	 beat_voice_id,
-	 base_voice_id,
-	 snare_voice_id,
+
 	 opts = [],
 	 match = ignore,
 	 quality = 0.0,
@@ -106,6 +121,13 @@ start_usb_midi() -> start([{name,"USB-MIDI"}]).
 start(Opts) ->
     application:ensure_all_started(epx),
     application:ensure_all_started(midi),
+    application:ensure_all_started(xbus),
+    application:load(egear),
+    application:set_env(egear, xbus, true),
+    application:set_env(egear, device, "/dev/serial/by-id/usb-Palette_Palette_Multi-function_Device_*"),
+    application:ensure_all_started(egear),
+    catch egear:screen_write(1, egear_icon:erlang()),
+    catch egear:screen_display(1),
     alsa_play:start(#{ channels => 2 }),
     epxw:start(?MODULE,
 	       Opts,
@@ -161,38 +183,49 @@ init(Opts) ->
     {ok,SFont} = epx_font:match([{name,?FONT_NAME},
 				 {slant, italic},
 				 {size,?SHARP_FONT_SIZE}]),
+
     %% io:format("PLAY: ~s\n", [Chord]),
     {ok,IMG} = epx_image:load(filename:join(code:priv_dir(midi), 
 					    "g_clef.png")),
     [GClef|_] = epx_image:pixmaps(IMG),
     
-    Default = [major,raising],
+    Selected = [major,raising],
     Buttons = make_buttons([major,minor,sharp,random,raising,falling],
-			   Default),
-
+			   Selected),
     Seq = #lesson{chord=_Chord} = lesson_first({raising,major}),
-    
-    BeatVoiceID = alsa_play:alloc(),
-    alsa_play:append_file(BeatVoiceID, 0,
-			  filename:join([code:lib_dir(midi),"tools",
-					 "Clunk Closed.wav"])),
-    SnareVoiceID = alsa_play:alloc(),
-    alsa_play:append_file(SnareVoiceID, 0,
-			  filename:join([code:lib_dir(midi),"tools",
-					 "Tight Snare.wav"])),
 
-    BaseVoiceID = alsa_play:alloc(),
-    alsa_play:append_file(BaseVoiceID, 0,
-			  filename:join([code:lib_dir(midi),"tools",
-					 "Breathe Kick.wav"])),
+    %% Load drums
+
+    %% Default = "Default",
+    %% Default = "Roland-R-8",
+    Default = "Korg-N1R",
+    DrumDir0 = application:get_env(midi, drum_dir, Default),
+    DrumDir  = filename:join([code:lib_dir(midi),"tools",DrumDir0]),
+    
+    ClosedHiHat = alsa_play:alloc(),
+    alsa_play:append_file(ClosedHiHat, 0, 
+			  filename:join(DrumDir, "42_closed_hi_hat.wav")),
+    OpenHiHat = alsa_play:alloc(),
+    alsa_play:append_file(OpenHiHat, 0, 
+			  filename:join(DrumDir, "46_open_hi_hat.wav")),
+    SnareDrum = alsa_play:alloc(),
+    alsa_play:append_file(SnareDrum, 0,
+			  filename:join(DrumDir, "38_snare_drum.wav")),
+    BassDrum = alsa_play:alloc(),
+    alsa_play:append_file(BassDrum, 0,
+			  filename:join(DrumDir, "36_bass_drum.wav")),
+
     Division = proplists:get_value(division, Opts, ?DEFAULT_DIVISION),
     Clock = erlang:start_timer(16#ffffffff, undefined, undefined),
     Bpm = proplists:get_value(bpm, Opts, ?DEFAULT_BPM),
+    epxw:set_status_text("Bpm: "++integer_to_list(Bpm)),
     MilliToDiv = round((60000 / Bpm)/Division),
     %% io:format("ms=~w\n", [MilliToDiv]),
     erlang:start_timer(MilliToDiv, self(), tick),
     ClockTick = erlang:read_timer(Clock),
     alsa_play:resume(),
+
+    catch xbus:sub("egear.*"),
 
     {ok, #state { midi_in=In, voices=Voices, active=#{}, 
 		  midi_out=Out,
@@ -204,9 +237,15 @@ init(Opts) ->
 		  clock = Clock,
 		  count = 1,
 		  next_clock_tick = ClockTick - MilliToDiv,  %% remain!
-		  beat_voice_id = BeatVoiceID,
-		  base_voice_id = BaseVoiceID,
-		  snare_voice_id = SnareVoiceID,
+		  id_closed_hi_hat = ClosedHiHat,
+		  id_open_hi_hat   = OpenHiHat,
+		  id_bass_drum = BassDrum,
+		  id_snare_drum = SnareDrum,
+		  drum_map = #{ closed_hi_hat => ClosedHiHat,
+				open_hi_hat => OpenHiHat,
+				bass_drum => BassDrum,
+				snare_drum => SnareDrum
+			      },
 		  pressure=#{},
 		  main_font = {Font,epx:font_info(Font, ascent)},
 		  sharp_font = {SFont,epx:font_info(SFont, ascent)},
@@ -313,19 +352,23 @@ handle_info({midi,In,Event,_Delta}, State) when In =:= State#state.midi_in ->
     {noreply, midi_next(State1)};
 handle_info({timeout, _Ref, tick}, State) ->
     Count = State#state.count,
-    Size  = tuple_size(State#state.beat),
+    Size  = tuple_size(State#state.closed_hi_hat),
     IDList = 
-	case element(Count, State#state.beat) of
+	case element(Count, State#state.closed_hi_hat) of
 	    0 -> [];
-	    _ -> [State#state.beat_voice_id]
+	    _ -> [State#state.id_closed_hi_hat]
 	end ++
-	case element(Count, State#state.base) of
+	case element(Count, State#state.open_hi_hat) of
 	    0 -> [];
-	    _ -> [State#state.base_voice_id]
+	    _ -> [State#state.id_open_hi_hat]
 	end ++
-	case element(Count, State#state.snare) of
+	case element(Count, State#state.bass_drum) of
 	    0 -> [];
-	    _ -> [State#state.snare_voice_id]
+	    _ -> [State#state.id_bass_drum]
+	end ++
+	case element(Count, State#state.snare_drum) of
+	    0 -> [];
+	    _ -> [State#state.id_snare_drum]
 	end,
     
     alsa_play:restart(IDList),
@@ -347,7 +390,34 @@ handle_info({timeout, _Ref, tick}, State) ->
 				  next_clock_tick = ClockTick-MilliToDiv
 				 }}
     end;
+handle_info({xbus, _Pattern, _Event=#{ topic := <<"egear.",Path/binary>>, 
+				       value := Value }}, State) ->
+    case binary:split(Path, <<".">>, [global]) of
+	[<<"button">>,ID,_Index,<<"connect">>] ->
+	    State1 = handle_connect(ID, Value, State),
+	    {noreply, State1};
+	[<<"dial">>,ID,_Index,<<"connect">>] ->
+	    State1 = handle_connect(ID, Value, State),
+	    {noreply, State1};
+	[<<"button">>,ID,_Index,<<"state">>] ->
+	    State1 = handle_value(ID, Value, State),
+	    {noreply, State1};
+	[<<"dial">>,ID,_Index,<<"state">>] ->
+	    State1 = handle_value(ID, Value, State),
+	    {noreply, State1};
+	[<<"dial">>,_ID,_Index,<<"value">>] ->
+	    State1 = handle_bpm_value(Value, State),
+	    {noreply, State1};
+	[<<"slider">>,_ID,_Index,<<"value">>] ->
+	    State1 = handle_bpm_value(Value, State),
+	    {noreply, State1};
+	_ ->
+	    io:format("xbus: ~p\n", [_Event]),
+	    {noreply, State}
+    end;
+
 handle_info(_Info, State) ->
+    io:format("got: ~p\n", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -385,6 +455,69 @@ code_change(_OldVsn, State, _Extra) ->
 %% or when it appears in termination error logs.
 %% @end
 %%--------------------------------------------------------------------
+
+handle_bpm_value(Value, State) ->
+    X = (Value / 255),
+    Bpm = trunc(30*(1-X) + 120*X),
+    epxw:set_status_text("Bpm: "++integer_to_list(Bpm)),
+    epxw:invalidate(),
+    Division = State#state.division,
+    MilliToDiv = round((60000 / Bpm)/Division),
+    State#state { bpm = Bpm, 
+		  division = Division,
+		  milli_to_div = MilliToDiv }.
+
+handle_connect(ID, "ok", State) ->
+    assign_drum(ID, State);
+handle_connect(ID, "enoent", State) ->
+    release_drum(ID, State).
+
+handle_value(ID, 1, State) ->
+    case lookup_drum(ID, State) of
+	error ->
+	    State;
+	DrumID ->
+	    case maps:get(DrumID, State#state.drum_map, undefined) of
+		undefined -> 
+		    State;
+		VoiceID ->
+		    alsa_play:restart(VoiceID),
+		    alsa_play:run(VoiceID),
+		    State
+	    end
+    end;
+handle_value(_ID, 0, State) ->
+    State.
+    
+
+assign_drum(ID, State=#state{drums=Drums}) ->
+    io:format("assign id ~p\n", [ID]),
+    case maps:get(drum_list, Drums) of
+	[D|Ds] ->
+	    io:format("  to drum ~p\n", [D]),
+	    State#state{drums=Drums#{ D => ID, ID => D,  drum_list => Ds }};
+	[] ->
+	    State
+    end.
+
+release_drum(ID, State=#state{drums=Drums}) ->
+    io:format("unassign id ~p\n", [ID]),
+    case maps:get(ID, Drums, undefined) of
+	undefined -> State;
+	D ->
+	    io:format("release drum ~p\n", [D]),
+	    Ds = maps:get(drum_list, Drums),
+	    State#state{drums=Drums#{ D => undefined, 
+				      ID => undefined,  drum_list => [D|Ds] }}
+    end.
+
+lookup_drum(ID, #state{drums=Drums}) ->
+    R = maps:get(ID, Drums, undefined),
+    io:format("lookup_drum ~p res = ~p\n", [ID, R]),
+    R.
+
+
+
 -spec format_status(Opt :: normal | terminate,
 		    Status :: list()) -> Status :: term().
 format_status(_Opt, Status) ->
@@ -724,7 +857,7 @@ allocate_voice([]) ->
     false.
 
 %% Test if active notes match the Chord
-%% - remove potential play along base notes;
+%% - remove potential play along bass notes;
 %%      [R,R+12|Ns] -> [R+12|Ns]
 %%      [R,R+12,R+24,...] -> [R+24|Ns]
 %% - check timing 
@@ -754,7 +887,7 @@ display_chord(Chord, Quality, Ns) ->
     io:format("~p: quality=~f%, ~s\n", [Notes, Quality, Chord]).
 
 
-%% sort and remove "play along" one/two base notes
+%% sort and remove "play along" one/two bass notes
 normalize_notes([]) -> [];
 normalize_notes(Rs=[_]) -> Rs;
 normalize_notes(Rs=[_,_]) -> Rs;
