@@ -15,14 +15,16 @@
 -export([start_lpk25/0]).
 -export([start_vmpk/0]).
 -export([start_usb_midi/0]).
--compile(export_all).
+
+%% -compile(export_all).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3, format_status/2]).
 %% epxw
--export([draw/3, draw/4, button_press/2]).
-
+-export([draw/3, draw/4, button_press/2, key_press/2,
+	 menu/2, command/3]).
+	 
 -type chan() :: 0..15.
 -type note() :: 0..127.
 -type voice() :: integer().
@@ -30,20 +32,42 @@
 
 -define(SERVER, ?MODULE).
 
--define(TEXT_COLOR,              {0,0,0,0}).       %% black text
+-define(verbose(F, A), io:format((F),(A))).
+
+
+-define(WHITE, grey5).
+-define(BLACK, grey10).
+
+-include_lib("epx/include/epx_menu.hrl").
+
+-define(BLACK_TEXT_COLOR,              {0,0,0,0}).
+-define(WHITE_TEXT_COLOR,              {0,255,255,255}).
 -define(FONT_NAME, "Arial").
 -define(FONT_SIZE, 48).
 -define(SHARP_FONT_SIZE, 14).
-
+-define(DRUM_FONT_SIZE, 10).
 -define(BUTTON_FONT_SIZE, 12).
 -define(BUTTON_HEIGHT, 18).
 -define(LEFT_BAR_SIZE, 80).
--define(LEFT_BAR_COLOR, orange).
--define(BUTTON_COLOR, gray).
--define(BUTTON_SELECTED_COLOR, green).
+-define(LEFT_BAR_COLOR, {255, 165, 0}).
+-define(TOP_BAR_SIZE, 80).
+-define(BOT_BAR_SIZE, 18).
+-define(TOP_BAR_COLOR, {20,200,20}).
+-define(BOT_BAR_COLOR, {20,200,20}).
+
+-define(BUTTON_COLOR, {128,128,128}).
+-define(BUTTON_SELECTED_COLOR, {0,200,0}).
 
 -define(DEFAULT_BPM,     80).  %% quarter note
 -define(DEFAULT_DIVISION, 4).  %% resulution 4 ticks per quater note 1/16
+-define(MAX_BPM, 240).
+-define(MIN_BPM, 30).
+
+-define(KEYBOARD_X0, 32).
+-define(KEYBOARD_Y0, 128).
+
+-define(GCLEF_X0, 512). %% 220).
+-define(GCLEF_Y0, 33).
 
 -record(lesson,
 	{
@@ -65,10 +89,39 @@
 	 name :: string()
 	}).
 
+%% color profile with default values
+-record(profile,
+	{
+	 scheme                        = logo, %% xterm,
+	 %% epxw: menu info
+	 menu_font_name                = "Arial",
+	 menu_font_size                = 14,
+	 menu_font_color               = ?WHITE,
+	 menu_background_color         = ?BLACK,
+	 menu_border_color             = green,
+
+	 border_width                  = 1,
+	 border_color                  = ?BLACK,
+	 select_color                  = ?WHITE,
+	 select_border_width           = 2,
+	 select_border_color           = ?BLACK,
+	 highlight_color               = grey6,
+	 highlight_border_width        = 2,
+	 highlight_border_color        = red,
+
+	 label_font                    = "Arial",
+	 label_font_size               = 12,
+	 label_font_color              = ?BLACK,
+	 label_background_color        = ?BLACK,
+	 label_border_color            = yellow
+	}).
+
+
 -record(state,
 	{
 	 midi_in,      %% midi input device
 	 midi_out,     %% output synth
+	 menu_profile,
 	 pending = 0,  %% number of pending events
 	 voices :: [voice()],   %% pressed keys
 	 active = #{} :: #{ {chan(),note()} => voice() },
@@ -78,27 +131,27 @@
 	 %% div = 4 then the start on each group is a quarter note
 	 closed_hi_hat = {1,0,1,0,  1,0,1,0, 1,0,1,0, 1,0,1,0},
 	 open_hi_hat   = {0,0,0,0,  0,0,0,1, 0,0,0,0, 0,0,0,0},
-	 bass_drum     = {1,0,0,0,  0,0,0,1, 1,0,0,0, 0,0,0,0},
 	 snare_drum    = {0,0,0,0,  1,0,0,0, 0,0,0,0, 1,0,0,0},
-
-	 id_closed_hi_hat,
-	 id_open_hi_hat,
-	 id_bass_drum,
-	 id_snare_drum,
+	 bass_drum     = {1,0,0,0,  0,0,0,1, 1,0,0,0, 0,0,0,0},
+	 crash_cymbal  = {2,0,0,0,  0,0,0,0, 0,0,0,0, 0,0,0,0},
 
 	 %% drum => ID, [ ID => drum  whem allocated ]
 	 drums = #{ drum_list => [closed_hi_hat, open_hi_hat,
-				  bass_drum, snare_drum ],
+				  bass_drum, snare_drum, id_crash_cymbal ],
 		    closed_hi_hat => undefined,
 		    open_hi_hat => undefined,
 		    bass_drum => undefined,
-		    snare_drum => undefined },
+		    snare_drum => undefined,
+		    crash_cymbal => undefined
+		  },
 
 	 drum_map = #{},  %% drum name => voice id
+	 drum_set_dir :: file:name_all(),  %% dir path to drums
 
 	 clock,           %% clock timer
 	 next_clock_tick, %% clock when next tick is expected
-	 count = 1,       %% division count 1..division
+	 pause = false,
+	 count = 0,       %% tick counter 0..
 	 milli_to_div,
 
 	 opts = [],
@@ -109,6 +162,7 @@
 	 main_font,
 	 sharp_font,
 	 button_font,
+	 drum_font,
 	 buttons = [] :: [#button{}],
 	 g_clef
 	}).
@@ -126,8 +180,8 @@ start(Opts) ->
     application:set_env(egear, xbus, true),
     application:set_env(egear, device, "/dev/serial/by-id/usb-Palette_Palette_Multi-function_Device_*"),
     application:ensure_all_started(egear),
-    catch egear:screen_write(1, egear_icon:erlang()),
-    catch egear:screen_display(1),
+    %% catch egear:screen_write(1, egear_icon:erlang()),
+    %% catch egear:screen_display(1),
     alsa_play:start(#{ channels => 2 }),
     epxw:start(?MODULE,
 	       Opts,
@@ -139,12 +193,16 @@ start(Opts) ->
 		{scroll_bar_size,   14},
 		{scroll_hndl_size,  10},
 		{left_bar,?LEFT_BAR_SIZE},
-		{top_bar,0},
+		{left_bar_color, ?LEFT_BAR_COLOR},
+		{top_bar,?TOP_BAR_SIZE},
+		{top_bar_color, ?TOP_BAR_COLOR},
+		{bottom_bar, ?BOT_BAR_SIZE},
+		{bottom_bar_color, ?BOT_BAR_COLOR},
 		{right_bar,0},
-		{width, 512},
-		{height, 512},
-		{view_width, 512},
-		{view_height, 512}]).
+		{width, 800},
+		{height, 480},
+		{view_width, 800-?LEFT_BAR_SIZE},
+		{view_height, 480-?TOP_BAR_SIZE-?BOT_BAR_SIZE}]).
 
 %%%===================================================================
 %%% API
@@ -167,6 +225,7 @@ start(Opts) ->
 	  ignore.
 init(Opts) ->
     process_flag(trap_exit, true),
+    Env = Opts ++ application:get_all_env(midi),
     In = case find_input_device(Opts) of
 	     {ok, Device} ->
 		 {ok,Fd}  = midi:open(Device,[event,list,running]),
@@ -176,9 +235,17 @@ init(Opts) ->
 		 io:format("midi:open error ~p\n", [Err]),
 		 undefined
 	 end,
-    {ok, Out} = midi:open_synth(),
+    Out = case midi:open_synth() of
+	      {ok, MidiOut} -> MidiOut;
+	      {error,_} -> undefined
+	  end,
     Voices = lists:seq(1, 10),
+
+    Profile = load_profile(Env),
+    MenuProfile = create_menu_profile(Profile),
+
     {ok,Font} = epx_font:match([{name,?FONT_NAME},{size,?FONT_SIZE}]),
+    {ok,DFont} = epx_font:match([{name,?FONT_NAME},{size,?DRUM_FONT_SIZE}]),
     {ok,BFont} = epx_font:match([{name,?FONT_NAME},{size,?BUTTON_FONT_SIZE}]),
     {ok,SFont} = epx_font:match([{name,?FONT_NAME},
 				 {slant, italic},
@@ -195,25 +262,18 @@ init(Opts) ->
     Seq = #lesson{chord=_Chord} = lesson_first({raising,major}),
 
     %% Load drums
-
-    %% Default = "Default",
-    %% Default = "Roland-R-8",
-    Default = "Korg-N1R",
-    DrumDir0 = application:get_env(midi, drum_dir, Default),
-    DrumDir  = filename:join([code:lib_dir(midi),"tools",DrumDir0]),
-    
-    ClosedHiHat = alsa_play:alloc(),
-    alsa_play:append_file(ClosedHiHat, 0, 
-			  filename:join(DrumDir, "42_closed_hi_hat.wav")),
-    OpenHiHat = alsa_play:alloc(),
-    alsa_play:append_file(OpenHiHat, 0, 
-			  filename:join(DrumDir, "46_open_hi_hat.wav")),
-    SnareDrum = alsa_play:alloc(),
-    alsa_play:append_file(SnareDrum, 0,
-			  filename:join(DrumDir, "38_snare_drum.wav")),
-    BassDrum = alsa_play:alloc(),
-    alsa_play:append_file(BassDrum, 0,
-			  filename:join(DrumDir, "36_bass_drum.wav")),
+    %% DrumSet = "Default",
+    %% DrumSet = "Roland_R8",
+    %% DrumSet = "Korg_N1R",
+    %% DrumSet = "Kawai_XD5",
+    DrumSet = application:get_env(midi, drum_set, "Default"),
+    DrumSetDir = case application:get_env(midi, drum_dir, undefined) of
+		     undefined ->
+			 filename:join([code:lib_dir(midi),"tools","DrumSet"]);
+		     DDir -> DDir
+		 end,
+    Drums = alloc_drums(),
+    Drums1 = load_drums(filename:join(DrumSetDir, DrumSet), Drums),
 
     Division = proplists:get_value(division, Opts, ?DEFAULT_DIVISION),
     Clock = erlang:start_timer(16#ffffffff, undefined, undefined),
@@ -229,24 +289,18 @@ init(Opts) ->
 
     {ok, #state { midi_in=In, voices=Voices, active=#{}, 
 		  midi_out=Out,
+		  menu_profile = MenuProfile,
 		  opts = Opts,
 		  seq = Seq,
 		  bpm = Bpm,
 		  division = Division,
 		  milli_to_div = MilliToDiv,
 		  clock = Clock,
-		  count = 1,
 		  next_clock_tick = ClockTick - MilliToDiv,  %% remain!
-		  id_closed_hi_hat = ClosedHiHat,
-		  id_open_hi_hat   = OpenHiHat,
-		  id_bass_drum = BassDrum,
-		  id_snare_drum = SnareDrum,
-		  drum_map = #{ closed_hi_hat => ClosedHiHat,
-				open_hi_hat => OpenHiHat,
-				bass_drum => BassDrum,
-				snare_drum => SnareDrum
-			      },
+		  drum_map = Drums1,
+		  drum_set_dir = DrumSetDir,
 		  pressure=#{},
+		  drum_font = {DFont,epx:font_info(DFont, ascent)},
 		  main_font = {Font,epx:font_info(Font, ascent)},
 		  sharp_font = {SFont,epx:font_info(SFont, ascent)},
 		  button_font = {BFont,epx:font_info(BFont, ascent)},
@@ -254,13 +308,55 @@ init(Opts) ->
 		  buttons = Buttons 
 		}}.
 
+alloc_drums() ->
+    #{ closed_hi_hat => alsa_play:alloc(),
+       open_hi_hat => alsa_play:alloc(),
+       snare_drum => alsa_play:alloc(),
+       bass_drum => alsa_play:alloc(),
+       crash_cymbal => alsa_play:alloc() }.
+
+load_drums(Dir, Map) ->
+    {ok,List} = file:list_dir(Dir),
+    lists:foreach(
+      fun(File) ->
+	      case File of
+		  "42_"++_ ->
+		      ID = maps:get(closed_hi_hat, Map),
+		      alsa_play:clear(ID),
+		      alsa_play:append_file(ID, 0, filename:join(Dir, File));
+		  "46_"++_ ->
+		      ID = maps:get(open_hi_hat, Map),
+		      alsa_play:clear(ID),
+		      alsa_play:append_file(ID, 0, filename:join(Dir, File));
+		  "38_"++_ ->
+		      ID = maps:get(snare_drum, Map),
+		      alsa_play:clear(ID),
+		      alsa_play:append_file(ID, 0, filename:join(Dir, File));
+		  "36_"++_ ->
+		      ID = maps:get(bass_drum, Map),
+		      alsa_play:clear(ID),
+		      alsa_play:append_file(ID, 0, filename:join(Dir, File));
+		  "49_"++_ ->
+		      ID = maps:get(crash_cymbal, Map),
+		      alsa_play:clear(ID),
+		      alsa_play:append_file(ID, 0, filename:join(Dir, File));
+		  _ ->
+		      ignore
+	      end
+      end, List),
+    Map.
+
 make_buttons(Bs, Def) ->
     make_buttons_(Bs, 32, Def).
 
 make_buttons_([B|Bs], Y, Def) ->
     Enable = lists:member(B, Def),
     Name = string:substr(string:titlecase(atom_to_list(B)),1,3),
-    But = #button{id=B,y=Y+2,h=?BUTTON_HEIGHT-4,x=4,w=?LEFT_BAR_SIZE-8,
+    But = #button{id=B,
+		  y =?TOP_BAR_SIZE+Y+2,
+		  h =?BUTTON_HEIGHT-4,
+		  x =4,
+		  w =?LEFT_BAR_SIZE-8,
 		  enable=Enable,name=Name},
     io:format("button ~w: ~p\n", [B, But]),
     [But | make_buttons_(Bs, Y+?BUTTON_HEIGHT, Def)];
@@ -344,35 +440,35 @@ handle_info({select,In,undefined,ready_input}, State) when
     end;
 handle_info({midi,In,Event}, State) when In =:= State#state.midi_in ->
     State1 = midi_event(Event, State),
-    midi:write(State#state.midi_out, midi_codec:event_encode(Event)),
+    case State#state.midi_out of
+	undefined -> ok;
+	Out -> midi:write(Out, midi_codec:event_encode(Event))
+    end,
     {noreply, midi_next(State1)};
 handle_info({midi,In,Event,_Delta}, State) when In =:= State#state.midi_in ->
     State1 = midi_event(Event, State),
-    midi:write(State#state.midi_out, midi_codec:event_encode(Event)),
+    case State#state.midi_out of
+	undefined -> ok;
+	Out -> midi:write(Out, midi_codec:event_encode(Event))
+    end,
     {noreply, midi_next(State1)};
+handle_info({timeout, _Ref, tick}, State=#state { pause = true }) ->
+    {noreply, State};
 handle_info({timeout, _Ref, tick}, State) ->
+    N  = tuple_size(State#state.closed_hi_hat),
     Count = State#state.count,
-    Size  = tuple_size(State#state.closed_hi_hat),
+    I = (Count rem N) + 1,
+    J = (Count div N),
     IDList = 
-	case element(Count, State#state.closed_hi_hat) of
-	    0 -> [];
-	    _ -> [State#state.id_closed_hi_hat]
-	end ++
-	case element(Count, State#state.open_hi_hat) of
-	    0 -> [];
-	    _ -> [State#state.id_open_hi_hat]
-	end ++
-	case element(Count, State#state.bass_drum) of
-	    0 -> [];
-	    _ -> [State#state.id_bass_drum]
-	end ++
-	case element(Count, State#state.snare_drum) of
-	    0 -> [];
-	    _ -> [State#state.id_snare_drum]
-	end,
-    
+	cons_drum(I, J, closed_hi_hat, State#state.closed_hi_hat, State,
+	cons_drum(I, J, open_hi_hat,   State#state.open_hi_hat, State, 
+        cons_drum(I, J, bass_drum,     State#state.bass_drum, State, 
+        cons_drum(I, J, snare_drum,    State#state.snare_drum, State, 
+	cons_drum(I, J, crash_cymbal,  State#state.crash_cymbal, State, []))))),
     alsa_play:restart(IDList),
     alsa_play:run(IDList),
+
+    draw_tick(I, N),
 
     ClockTick = erlang:read_timer(State#state.clock),
     MilliToDiv = State#state.milli_to_div,
@@ -381,12 +477,12 @@ handle_info({timeout, _Ref, tick}, State) ->
     %% io:format("ms=~w,delta=~w\n", [MilliToDiv-Delta,Delta]),
     if Delta < MilliToDiv, Delta < 20 -> 
 	    erlang:start_timer(MilliToDiv-Delta, self(), tick),
-	    {noreply, State#state{count=(Count rem Size)+1,
+	    {noreply, State#state{count=Count+1,
 				  next_clock_tick = NextClockTick-MilliToDiv
 				 }};
        true -> %% too long delay - adjust 
 	    erlang:start_timer(MilliToDiv, self(), tick),
-	    {noreply, State#state{count=(Count rem Size)+1,
+	    {noreply, State#state{count=Count+1,
 				  next_clock_tick = ClockTick-MilliToDiv
 				 }}
     end;
@@ -456,9 +552,50 @@ code_change(_OldVsn, State, _Extra) ->
 %% @end
 %%--------------------------------------------------------------------
 
+cons_drum(I, J, Drum, Pattern, State, Acc) ->
+    case element(I, Pattern) of
+	0 -> Acc;
+	1 -> %% repeat every lap
+	    case maps:get(Drum, State#state.drum_map,undefined) of
+		undefined -> Acc;
+		ID -> [ID|Acc]
+	    end;
+	N -> %% repeat every N'th time
+	    case J rem N of
+		0 ->
+		    case maps:get(Drum, State#state.drum_map,undefined) of
+			undefined -> Acc;
+			ID -> [ID|Acc]
+		    end;
+		_ -> Acc
+	    end
+    end.
+
+toggle_pause(State) ->
+    case not State#state.pause of
+	false ->
+	    MilliToDiv = State#state.milli_to_div,
+	    ClockTick = erlang:read_timer(State#state.clock),
+	    erlang:start_timer(MilliToDiv, self(), tick),
+	    State#state { pause = false,
+			  next_clock_tick = ClockTick - MilliToDiv };
+	true ->
+	    State#state { pause = true }
+    end.
+
 handle_bpm_value(Value, State) ->
     X = (Value / 255),
-    Bpm = trunc(30*(1-X) + 120*X),
+    Bpm = trunc(?MIN_BPM*(1-X) + ?MAX_BPM*X),
+    epxw:set_status_text("Bpm: "++integer_to_list(Bpm)),
+    epxw:invalidate(),
+    Division = State#state.division,
+    MilliToDiv = round((60000 / Bpm)/Division),
+    State#state { bpm = Bpm, 
+		  division = Division,
+		  milli_to_div = MilliToDiv }.
+
+update_bpm_value(Value, State) ->
+    Bpm = min(max(?MIN_BPM, State#state.bpm + Value), ?MAX_BPM),
     epxw:set_status_text("Bpm: "++integer_to_list(Bpm)),
     epxw:invalidate(),
     Division = State#state.division,
@@ -525,7 +662,6 @@ format_status(_Opt, Status) ->
 
 %% Draw callback
 draw(Pixels, _Rect, State) ->
-    io:format("Draw\n"),
     case State#state.match of
 	true ->
 	    epx:pixmap_fill(Pixels, green);
@@ -540,11 +676,11 @@ draw(Pixels, _Rect, State) ->
     #lesson{chord=Chord} = State#state.seq,
     {Font,Ascent} = State#state.main_font,
     epx_gc:set_font(Font),
-    epx_gc:set_foreground_color(?TEXT_COLOR),
+    epx_gc:set_foreground_color(?BLACK_TEXT_COLOR),
     epx:draw_string(Pixels, 32, 64+Ascent, Chord),
     {SFont,SAscent} = State#state.sharp_font,
     epx_gc:set_font(SFont),
-    epx_gc:set_foreground_color(?TEXT_COLOR),
+    epx_gc:set_foreground_color(?BLACK_TEXT_COLOR),
     epx:draw_string(Pixels, 32, 164+SAscent, State#state.chord),
     if State#state.match =:= false ->
 	    epx:draw_string(Pixels, 32, 184+SAscent, 
@@ -554,29 +690,131 @@ draw(Pixels, _Rect, State) ->
     end,
     State.
 
+%% draw the drum -grid
+draw(top, Pixels, _Rect, State) ->
+    {Font,Ascent} = State#state.drum_font,
+    epx_gc:set_font(Font),
+    epx_gc:set_foreground_color(?WHITE_TEXT_COLOR),
+
+    epx_gc:set_border_color(black),
+    epx_gc:set_border_width(1),
+    epx_gc:set_fill_color(blue),
+
+    Empty = erlang:make_tuple(tuple_size(State#state.closed_hi_hat), 0),
+
+    Left = 8, %% ?LEFT_BAR_SIZE
+    Top  = 10,
+    W    = 10,
+    H    = 10,
+    draw_grid_line(Pixels, Left+40, 0, W, H, 1, Empty),
+    epx:draw_string(Pixels,Left,    Top+Ascent, "closed:"),
+    draw_grid_line(Pixels, Left+40, Top, W, H, 1, State#state.closed_hi_hat),
+    epx:draw_string(Pixels,Left,    Top+12+Ascent, "open:"),
+    draw_grid_line(Pixels, Left+40, Top+12, W, H, 1, State#state.open_hi_hat),
+    epx:draw_string(Pixels,Left,    Top+24+Ascent, "snare:"),
+    draw_grid_line(Pixels, Left+40, Top+24, W, H, 1, State#state.snare_drum),
+    epx:draw_string(Pixels,Left,    Top+36+Ascent, "bass:"),
+    draw_grid_line(Pixels, Left+40, Top+36, W, H, 1, State#state.bass_drum),
+    epx:draw_string(Pixels,Left,    Top+48+Ascent, "crash:"),
+    draw_grid_line(Pixels, Left+40, Top+48, W, H, 1, State#state.crash_cymbal),
+    State;
 %% draw left bar (practice selection)
 draw(left, Pixels, _Rect, State) ->
-    {BFont,Ascent} = State#state.button_font,
-    Height = epx:pixmap_info(Pixels, height),
-    epx:pixmap_fill_area(Pixels, 0, 0, ?LEFT_BAR_SIZE, Height, 
-			 ?LEFT_BAR_COLOR),
-    epx_gc:set_font(BFont),
-    epx_gc:set_foreground_color(?TEXT_COLOR),
+    {Font,Ascent} = State#state.button_font,
+    epx_gc:set_font(Font),
+    epx_gc:set_foreground_color(?BLACK_TEXT_COLOR),
     epx_gc:set_fill_style(solid),
     epx_gc:set_fill_color(?BUTTON_COLOR),
     epx_gc:set_border_color(?BUTTON_SELECTED_COLOR),
     lists:foreach(
       fun(#button{enable=E,x=X,y=Y,w=W,h=H,name=Name}) ->
 	      epx_gc:set_border_width(if E -> 2; true -> 0 end),
-	      {Wi,_Hi} = epx_font:dimension(BFont, Name),
+	      {Wi,_Hi} = epx_font:dimension(Font, Name),
 	      epx:draw_rectangle(Pixels,X,Y,W,H),
 	      epx:draw_string(Pixels,X+((W-Wi) div 2), Y+Ascent, Name)
       end, State#state.buttons),
     State.
 
+draw_grid_line(Pixels, X, Y, W, H, I, Bits) when I =< tuple_size(Bits) ->
+    epx_gc:set_fill_style(none),
+    epx:draw_rectangle(Pixels,X,Y,W,H),
+    case element(I, Bits) of
+	0 -> ok;
+	_N ->
+	    epx_gc:set_fill_style(solid),
+	    epx:draw_ellipse(Pixels,X,Y,W,H)
+    end,
+    draw_grid_line(Pixels,X+W+1,Y,W,H,I+1,Bits);
+draw_grid_line(_,_X,_Y,_W,_H,_I,_Bits) ->
+    ok.
+
+toggle_grid({X,Y}, State) ->
+    Size = tuple_size(State#state.closed_hi_hat),
+    Left = 8,
+    Top  = 10,
+    W    = 10,
+    H    = 10,
+    if X >= Left+40, X =< Left+40+Size*(W+1),
+       Y >= Top, Y =< Top+48+H ->
+	    I = trunc(X - (Left+40)) div (W+1),
+	    J = trunc(Y - Top) div (H+2),
+	    %% io:format("I=~w, J=~w\n", [I, J]),
+	    case J of
+		0 ->
+		    Set = toggle_element(I+1, State#state.closed_hi_hat),
+		    State#state{ closed_hi_hat = Set };
+		1 ->
+		    Set = toggle_element(I+1, State#state.open_hi_hat),
+		    State#state{ open_hi_hat = Set };
+		2 ->
+		    Set = toggle_element(I+1, State#state.snare_drum),
+		    State#state{ snare_drum = Set };
+		3 ->
+		    Set = toggle_element(I+1, State#state.bass_drum),
+		    State#state{ bass_drum = Set };
+		4 ->
+		    Set = toggle_element(I+1, State#state.crash_cymbal),
+		    State#state{ crash_cymbal = Set };
+		_ ->
+		    State
+	    end;
+       true ->
+	    State
+    end.
+
+toggle_element(I, Tuple) ->
+    case element(I, Tuple) of
+	0 -> setelement(I, Tuple, 1);
+	_N -> setelement(I, Tuple, 0)
+    end.
+
+%% mark current tick red and clear previous tick
+draw_tick(I,N) ->
+    Left = 8,
+    W    = 10,
+    H    = 10,
+    X0 = if I == 1 -> Left+40+(N-1)*(W+1);
+	    true -> Left+40+(I-2)*(W+1)
+	 end,
+    X1    = Left+40+(I-1)*(W+1),
+    Y    = 0,
+
+    epx_gc:set_fill_style(solid),
+    epxw:draw(top, 
+	      fun(Pixels, _Rect) ->
+		      epx_gc:set_fill_color(?TOP_BAR_COLOR),
+		      epx:draw_rectangle(Pixels,X0+1,Y+1,W-2,H-2),
+
+		      epx_gc:set_fill_color(white),
+		      epx:draw_rectangle(Pixels,X1+1,Y+1,W-2,H-2)
+	      end).
+    
 button_press({button_press, [left], Pos={_X,_Y}}, State) ->
-    WPos = {Xw,_Yw} = epxw:view_to_window_pos(Pos),
-    if Xw >= 0, Xw < ?LEFT_BAR_SIZE ->
+    WPos = {Xw,Yw} = epxw:view_to_window_pos(Pos),
+    if  Yw >= 0, Yw < ?TOP_BAR_SIZE ->
+	    epxw:invalidate(),
+	    toggle_grid(WPos, State);
+	Xw >= 0, Xw < ?LEFT_BAR_SIZE ->
 	    case find_button(WPos, State) of
 		false ->
 		    io:format("nothing found @Pos=~w\n", [WPos]),
@@ -592,9 +830,125 @@ button_press({button_press, [left], Pos={_X,_Y}}, State) ->
 button_press(_Event, State) ->
     State.
 
+key_press({key_press, Sym, _Mod, _Code}, State) ->
+    case Sym of
+	$k ->
+	    play(closed_hi_hat, State);
+	$j ->
+	    play(snare_drum, State);
+	$a ->
+	    play(bass_drum, State);
+	$s ->
+	    play(open_hi_hat, State);
+	$l ->
+  	    play(crash_cymbal, State);
+	up ->
+	    update_bpm_value(+1, State);
+	down ->
+	    update_bpm_value(-1, State);
+	pageup ->
+	    update_bpm_value(+10, State);
+	pagedown ->
+	    update_bpm_value(-10, State);
+	$\s ->
+	    toggle_pause(State);
+	$\r ->
+	    State#state { count = 1 };
+	_ ->
+	    io:format("key ~p not handled\n", [Sym]),
+	    State
+    end.
+
+menu({menu,_Pos}, State) ->
+    ?verbose("MENU: Pos = ~p\n", [_Pos]),
+    Path = filename:join([code:lib_dir(midi),"tools","DrumSet"]),
+    {ok, List} = file:list_dir(Path),
+    MProfile = State#state.menu_profile,
+    MenuList = [{"Default", {load_drumset, "Default"}} |
+		[{Set, {load_drumset,Set}} || Set <- List -- ["Default"]]],
+    Menu = epx_menu:create(MProfile#menu_profile{background_color=green},
+			   MenuList),
+    {reply, Menu, State}.
+
+command(Command, Mod, State) ->
+    ?verbose("Command: ~p, mod:~p\n", [Command, Mod]),
+    case Command of
+	{load_drumset, Name} ->
+	    Dir = filename:join(State#state.drum_set_dir, Name),
+	    Drums = load_drums(Dir, State#state.drum_map),
+	    {noreply, State#state { drum_map = Drums  }};
+	_ ->
+	    {noreply, State}
+    end.
+
+play(Drum, State) ->
+    case maps:get(Drum, State#state.drum_map, undefined) of
+	undefined -> State;
+	ID ->
+	    alsa_play:restart(ID),
+	    alsa_play:run(ID),
+	    State
+    end.
+
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+create_menu_profile(Profile) ->
+    #menu_profile {
+       scheme           = Profile#profile.scheme,
+       font_name        = Profile#profile.menu_font_name,
+       font_size        = Profile#profile.menu_font_size,
+       font_color       = Profile#profile.menu_font_color,
+       background_color = Profile#profile.menu_background_color,
+       border_color     = Profile#profile.menu_border_color
+      }.
+
+%% load #profile from environment
+load_profile(E) ->
+    D = #profile{},
+    S = load_value(scheme, E, D),
+    #profile {
+       scheme          = S,
+       border_width     = load_value(border_width, E, D),
+       border_color     = load_color(S,border_color, E, D),
+       select_color     = load_color(S,select_color, E, D),
+       select_border_width = load_value(select_border_width,E,D),
+       select_border_color = load_color(S,select_border_color,E,D),
+       highlight_color     = load_color(S,highlight_color,E,D),
+       highlight_border_width = load_value(highlight_border_width,E,D),
+       highlight_border_color = load_color(S,highlight_border_color,E,D),
+       label_font = load_value(label_font, E, D),
+       label_font_size = load_value(label_font_size, E, D),
+       label_font_color = load_color(S,label_font_color,E,D),
+       menu_font_name = load_value(menu_font_name, E, D),
+       menu_font_size = load_value(menu_font_size, E, D),
+       menu_font_color = load_color(S,menu_font_color,E,D),
+       menu_background_color = load_color(S,menu_background_color,E,D),
+       menu_border_color = load_color(S,menu_border_color,E,D)
+      }.
+
+%% map of profile record names and indices in the record
+profile_index() ->
+    maps:from_list(lists:zip(record_info(fields, profile), 
+			     lists:seq(2,record_info(size,profile)))).
+%% load value from environment or profile
+load_value(Key, Env, Profile) ->
+    case proplists:get_value(Key, Env) of
+	undefined ->
+	    Ix = profile_index(),
+	    Pos = maps:get(Key, Ix),
+	    element(Pos, Profile);
+	Value ->
+	    Value
+    end.
+
+%% load RGB value from environment or profile
+load_color(Scheme, Key, Env, Profile) ->
+    Value = load_value(Key, Env, Profile),
+    epx_profile:color(Scheme, Value).
+
+
 
 -define(WHITE_KEY_WIDTH, 32).
 -define(WHITE_KEY_HEIGHT, 200).
@@ -602,13 +956,14 @@ button_press(_Event, State) ->
 -define(BLACK_KEY_HEIGHT, trunc(?WHITE_KEY_HEIGHT*0.6)).
 -define(FINGER_WIDTH, (?BLACK_KEY_WIDTH-2)).
 -define(NUM_OCTAVES, 2).
--define(NOTE_FIRST, 60).  %% C4
+-define(NOTE_FIRST, 48).  %% C3
 -define(NOTE_LAST,  (?NOTE_FIRST + 12*?NUM_OCTAVES - 1)).
 -define(NOTE_WIDTH, 20).
 
 draw_octave(Pixels,N) ->
-    X0 = 16*2,
-    Y0 = 250,
+    X0 = ?KEYBOARD_X0,
+    Y0 = ?KEYBOARD_Y0,
+
     epx_gc:set_fill_style(solid),
     epx_gc:set_border_color(black),
     epx_gc:set_border_width(1),
@@ -634,8 +989,8 @@ draw_octave(Pixels,N) ->
 
 %% draw active notes
 draw_active(Pixels, _N, Active) ->
-    X0 = 16*2,
-    Y0 = 250,
+    X0 = ?KEYBOARD_X0,
+    Y0 = ?KEYBOARD_Y0,
     epx_gc:set_fill_color(beige),
     maps_foreach(
       fun({_Chan,Note},_V) ->
@@ -672,10 +1027,12 @@ draw_notes(Pixels, _N, #state{active=Active,
 			     g_clef=Gclef}) ->
     IWidth = 320,
     IHeight = 628,
-    epx:pixmap_scale_area(Gclef, Pixels, 220, 33, IWidth/4, IHeight/4, [blend]),
+    epx:pixmap_scale_area(Gclef, Pixels, ?GCLEF_X0, ?GCLEF_Y0,
+			  IWidth/4, IHeight/4, [blend]),
     Step  = 22,
-    Yoffs = 64,
-    Xoffs = 216,
+    Xoffs = ?GCLEF_X0 - 4, %% 216,
+    Yoffs = ?GCLEF_Y0 + 31, %% 64,
+
     epx_gc:set_foreground_color(black),
     epx_gc:set_line_width(2),
     epx_gc:set_font(Font),
@@ -687,7 +1044,7 @@ draw_notes(Pixels, _N, #state{active=Active,
       end, [Yoffs+I*Step || I<-lists:seq(0, 5)]),
     epx_gc:set_border_width(4),
     epx_gc:set_fill_style(none),
-    epx_gc:set_foreground_color(?TEXT_COLOR),
+    epx_gc:set_foreground_color(?BLACK_TEXT_COLOR),
     maps_foreach(
       fun({_Chan,Note},_) ->
 	      if Note >= ?NOTE_FIRST, Note =< ?NOTE_LAST ->

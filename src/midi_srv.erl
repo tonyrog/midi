@@ -72,7 +72,8 @@ auto_start() ->
 	    ets:insert(midi_reg, {synth,Fd}),
 	    {ok, #state { fd=Fd }};
 	Error -> %% stop? or warn?
-	    {stop, Error}
+	    io:format("warn: auto_start: ~p\n", [Error]),
+	    {ok, #state {}}
     end.
 
 %%--------------------------------------------------------------------

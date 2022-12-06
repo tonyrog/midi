@@ -11,8 +11,8 @@
 -export([stop/1]).
 -export([portname/0]).
 
--define(dbg(F,A), ok).
-%% -define(dbg(F,A), io:format((F),(A))).
+%% -define(dbg(F,A), ok).
+-define(dbg(F,A), io:format((F),(A))).
 
 -define(DEFAULT_SOUND_FONTS,
 	["/usr/share/sounds/sf2/FluidR3_GM.sf2",
@@ -24,7 +24,7 @@
 %% -m | --midi-driver | -o midi.driver
 -define(DEFAULT_MIDI,  "alsa_seq").
 %% -g | --gain | -o synth.gain
--define(DEFAULT_GAIN,  0.2).
+-define(DEFAULT_GAIN,  0.8).
 %% -K | --midi-channels | -o synth.midi-channels
 -define(DEFAULT_MIDI_CHANNELS, 16).
 %% -L | --audio-channels | -o synth.audio-channels
@@ -135,3 +135,4 @@ tr([C|Cs], C, Ds=[D1,D2]) -> [D1,D2|tr(Cs,C,Ds)];
 tr([C|Cs], C, Ds) -> Ds++tr(Cs,C,Ds);
 tr([H|Cs], C, Ds) -> [H|tr(Cs,C,Ds)];
 tr([],_C,_Ds) -> [].
+
