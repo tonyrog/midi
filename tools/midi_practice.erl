@@ -174,16 +174,18 @@ start_lpk25() -> start([{name,"LPK25"}]).
 start_vmpk() -> start([{name,"VMPK Input"}]).
 start_usb_midi() -> start([{name,"USB-MIDI"}]).
 
-start(Opts) ->
+start(Opts0) ->
     application:load(epx),
-    case application:get_env(epx, backend, default) of
-	"fb" ->
-	    %% application:set_env(epx, backend, "fb"),
-	    application:set_env(epx, pixel_format, 'argb/little'),
-	    application:set_env(epx, input_mouse_device, "/dev/input/event0");
+    Opts =
+	case application:get_env(epx, backend, default) of
+	    "fb" ->
+		%% application:set_env(epx, backend, "fb"),
+		application:set_env(epx, pixel_format, 'argb/little'),
+		application:set_env(epx, input_mouse_device, "/dev/input/event0"),
+		[{pixel_format, 'argb/little'}|Opts0];
 	_ ->
-	    ok
-    end,
+		Opts0
+	end,
     application:ensure_all_started(epx),
     application:ensure_all_started(midi),
     application:ensure_all_started(xbus),
