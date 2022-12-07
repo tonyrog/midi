@@ -34,6 +34,8 @@
 
 -define(verbose(F, A), io:format((F),(A))).
 
+-define(DEFAULT_SCREEN_WIDTH,  800).
+-define(DEFAULT_SCREEN_HEIGHT, 480).
 
 -define(WHITE, grey5).
 -define(BLACK, grey10).
@@ -173,6 +175,15 @@ start_vmpk() -> start([{name,"VMPK Input"}]).
 start_usb_midi() -> start([{name,"USB-MIDI"}]).
 
 start(Opts) ->
+    application:load(epx),
+    case application:get_env(epx, backend, default) of
+	"fb" ->
+	    %% application:set_env(epx, backend, "fb"),
+	    application:set_env(epx, pixel_format, 'argb/little'),
+	    application:set_env(epx, input_mouse_device, "/dev/input/event0");
+	_ ->
+	    ok
+    end,
     application:ensure_all_started(epx),
     application:ensure_all_started(midi),
     application:ensure_all_started(xbus),
@@ -183,6 +194,10 @@ start(Opts) ->
     %% catch egear:screen_write(1, egear_icon:erlang()),
     %% catch egear:screen_display(1),
     alsa_play:start(#{ channels => 2 }),
+
+    Width  = application:get_env(midi, screen_width, ?DEFAULT_SCREEN_WIDTH),
+    Height = application:get_env(midi, screen_height, ?DEFAULT_SCREEN_HEIGHT),
+
     epxw:start(?MODULE,
 	       Opts,
 	       [{title, "Midi Practice"},
@@ -199,10 +214,10 @@ start(Opts) ->
 		{bottom_bar, ?BOT_BAR_SIZE},
 		{bottom_bar_color, ?BOT_BAR_COLOR},
 		{right_bar,0},
-		{width, 800},
-		{height, 480},
-		{view_width, 800-?LEFT_BAR_SIZE},
-		{view_height, 480-?TOP_BAR_SIZE-?BOT_BAR_SIZE}]).
+		{width, Width},
+		{height, Height},
+		{view_width, Width-?LEFT_BAR_SIZE},
+		{view_height, Height-?TOP_BAR_SIZE-?BOT_BAR_SIZE}]).
 
 %%%===================================================================
 %%% API
