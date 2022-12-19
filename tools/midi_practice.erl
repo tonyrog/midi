@@ -137,6 +137,17 @@
 	 bass_drum     = {1,0,0,0,  0,0,0,1, 1,0,0,0, 0,0,0,0},
 	 crash_cymbal  = {2,0,0,0,  0,0,0,0, 0,0,0,0, 0,0,0,0},
 
+	 %% fill1
+
+	 f1_closed_hi_hat = {0,0,0,0,  0,0,0,0},
+	 f1_open_hi_hat   = {0,0,0,0,  0,0,0,0},
+	 f1_snare_drum    = {1,0,1,1,  0,1,0,0},
+	 f1_bass_drum     = {0,1,0,0,  1,0,1,1},
+	 f1_crash_cymbal  = {0,0,0,0,  0,0,0,1},
+	 fill_offset = 0,   %% fill variation offset
+	 fill = false,      %% fill requested
+	 fill_count = undefined, %% count when fill started
+
 	 %% drum => ID, [ ID => drum  whem allocated ]
 	 drums = #{ drum_list => [closed_hi_hat, open_hi_hat,
 				  bass_drum, snare_drum, id_crash_cymbal ],
@@ -475,18 +486,27 @@ handle_info({timeout, _Ref, tick}, State) ->
     N  = tuple_size(State#state.closed_hi_hat),
     Count = State#state.count,
     I = (Count rem N) + 1,
-    J = (Count div N),
-    IDList = 
-	cons_drum(I, J, closed_hi_hat, State#state.closed_hi_hat, State,
-	cons_drum(I, J, open_hi_hat,   State#state.open_hi_hat, State, 
-        cons_drum(I, J, bass_drum,     State#state.bass_drum, State, 
-        cons_drum(I, J, snare_drum,    State#state.snare_drum, State, 
-	cons_drum(I, J, crash_cymbal,  State#state.crash_cymbal, State, []))))),
+    FillStart = ((I =:= 1) andalso  State#state.fill),
+    Fill = FillStart orelse is_integer(State#state.fill_count),
+    IDList = id_list(Fill, Count, N, State),
     alsa_play:restart(IDList),
     alsa_play:run(IDList),
 
-    draw_tick(I, N),
+    draw_tick(I, N, State#state.fill, State#state.main_font),
 
+    {Fill1,FillCount1,FillOffset1} =
+	if is_integer(State#state.fill_count) ->
+		if (Count - State#state.fill_count) =:= 8 ->
+			{false,undefined,State#state.fill_offset+1};
+		   true ->
+			{false,State#state.fill_count,State#state.fill_offset}
+		end;
+	   FillStart ->
+		%% fill starting, rearma
+		{false,Count,State#state.fill_offset};
+	   true ->
+		{State#state.fill,undefined,State#state.fill_offset}
+	end,
     ClockTick = erlang:read_timer(State#state.clock),
     MilliToDiv = State#state.milli_to_div,
     NextClockTick = State#state.next_clock_tick,
@@ -495,12 +515,18 @@ handle_info({timeout, _Ref, tick}, State) ->
     if Delta < MilliToDiv, Delta < 20 -> 
 	    erlang:start_timer(MilliToDiv-Delta, self(), tick),
 	    {noreply, State#state{count=Count+1,
-				  next_clock_tick = NextClockTick-MilliToDiv
+				  next_clock_tick = NextClockTick-MilliToDiv,
+				  fill = Fill1, 
+				  fill_count = FillCount1,
+				  fill_offset = FillOffset1
 				 }};
        true -> %% too long delay - adjust 
 	    erlang:start_timer(MilliToDiv, self(), tick),
 	    {noreply, State#state{count=Count+1,
-				  next_clock_tick = ClockTick-MilliToDiv
+				  next_clock_tick = ClockTick-MilliToDiv,
+				  fill = Fill1, 
+				  fill_count = FillCount1,
+				  fill_offset = FillOffset1
 				 }}
     end;
 handle_info({xbus, _Pattern, _Event=#{ topic := <<"egear.",Path/binary>>, 
@@ -568,6 +594,27 @@ code_change(_OldVsn, State, _Extra) ->
 %% or when it appears in termination error logs.
 %% @end
 %%--------------------------------------------------------------------
+
+id_list(true, Count, _N, State) ->
+    N = tuple_size(State#state.f1_closed_hi_hat),  %% new size
+    io:format("fill: offset=~w\n", [State#state.fill_offset]),
+    Count1 = Count + State#state.fill_offset,
+    I = (Count1 rem N) + 1,
+    J = (Count1 div N),
+    cons_drum(I, J, closed_hi_hat, State#state.f1_closed_hi_hat, State,
+    cons_drum(I, J, open_hi_hat,   State#state.f1_open_hi_hat, State, 
+    cons_drum(I, J, bass_drum,     State#state.f1_bass_drum, State, 
+    cons_drum(I, J, snare_drum,    State#state.f1_snare_drum, State, 
+    cons_drum(I, J, crash_cymbal,  State#state.f1_crash_cymbal, State, [])))));
+id_list(false, Count, N, State) ->    
+    I = (Count rem N) + 1,
+    J = (Count div N),
+    cons_drum(I, J, closed_hi_hat, State#state.closed_hi_hat, State,
+    cons_drum(I, J, open_hi_hat,   State#state.open_hi_hat, State, 
+    cons_drum(I, J, bass_drum,     State#state.bass_drum, State, 
+    cons_drum(I, J, snare_drum,    State#state.snare_drum, State, 
+    cons_drum(I, J, crash_cymbal,  State#state.crash_cymbal, State, []))))).
+
 
 cons_drum(I, J, Drum, Pattern, State, Acc) ->
     case element(I, Pattern) of
@@ -700,7 +747,7 @@ draw(Pixels, _Rect, State) ->
     epx_gc:set_foreground_color(?BLACK_TEXT_COLOR),
     epx:draw_string(Pixels, 32, 164+SAscent, State#state.chord),
     if State#state.match =:= false ->
-	    epx:draw_string(Pixels, 32, 184+SAscent, 
+	    epx:draw_string(Pixels, 32, 32+SAscent,
 			    "Q="++integer_to_list(trunc(State#state.quality))++"%");
        true ->
 	    ok
@@ -806,7 +853,7 @@ toggle_element(I, Tuple) ->
     end.
 
 %% mark current tick red and clear previous tick
-draw_tick(I,N) ->
+draw_tick(I,N,Fill,BFont) ->
     Left = 8,
     W    = 10,
     H    = 10,
@@ -823,8 +870,24 @@ draw_tick(I,N) ->
 		      epx:draw_rectangle(Pixels,X0+1,Y+1,W-2,H-2),
 
 		      epx_gc:set_fill_color(white),
-		      epx:draw_rectangle(Pixels,X1+1,Y+1,W-2,H-2)
+		      epx:draw_rectangle(Pixels,X1+1,Y+1,W-2,H-2),
+
+		      if Fill ->
+			      {Font,Ascent} = BFont,
+			      epx_gc:set_border_width(2),
+			      epx_gc:set_border_color(black),
+			      epx_gc:set_fill_color(white),
+  			      epx:draw_ellipse(Pixels,240,8,48,48),
+			      epx_gc:set_font(Font),
+			      epx_gc:set_foreground_color(?BLACK_TEXT_COLOR),
+			      epx:draw_string(Pixels, 244, 4+Ascent, "F"),
+			      epx_gc:set_border_width(0);
+			 true ->
+			      epx_gc:set_fill_color(?TOP_BAR_COLOR),
+			      epx:draw_rectangle(Pixels,240,6,52,52)
+		      end
 	      end).
+
     
 button_press({button_press, [left], Pos={_X,_Y}}, State) ->
     WPos = {Xw,Yw} = epxw:view_to_window_pos(Pos),
@@ -859,6 +922,9 @@ key_press({key_press, Sym, _Mod, _Code}, State) ->
 	    play(open_hi_hat, State);
 	$l ->
   	    play(crash_cymbal, State);
+	$f ->
+	    io:format("fill = true\n"),
+  	    State#state { fill = true };
 	up ->
 	    update_bpm_value(+1, State);
 	down ->
