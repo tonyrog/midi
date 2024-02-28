@@ -118,7 +118,6 @@
 	 label_border_color            = yellow
 	}).
 
-
 -record(state,
 	{
 	 midi_in,      %% midi input device
@@ -130,22 +129,18 @@
 	 pressure = #{} :: #{ chan() => pressure() },
 	 bpm = ?DEFAULT_BPM,
 	 division = ?DEFAULT_DIVISION,
+
+	 rythm_dir :: file:name_all(),  %% dir path rythms
+	 %% rythm_map :: #{},              %% current rythm, needed?
+	 
 	 %% div = 4 then the start on each group is a quarter note
-	 closed_hi_hat = {1,0,1,0,  1,0,1,0, 1,0,1,0, 1,0,1,0},
-	 open_hi_hat   = {0,0,0,0,  0,0,0,1, 0,0,0,0, 0,0,0,0},
-	 snare_drum    = {0,0,0,0,  1,0,0,0, 0,0,0,0, 1,0,0,0},
-	 bass_drum     = {1,0,0,0,  0,0,0,1, 1,0,0,0, 0,0,0,0},
-	 crash_cymbal  = {2,0,0,0,  0,0,0,0, 0,0,0,0, 0,0,0,0},
+	 pattern = #{},
+	 pattern_num_ticks = 0,
+	 fill = #{},
+	 fill_num_ticks = 0,
 
-	 %% fill1
-
-	 f1_closed_hi_hat = {0,0,0,0,  0,0,0,0},
-	 f1_open_hi_hat   = {0,0,0,0,  0,0,0,0},
-	 f1_snare_drum    = {1,0,1,1,  0,1,0,0},
-	 f1_bass_drum     = {0,1,0,0,  1,0,1,1},
-	 f1_crash_cymbal  = {0,0,0,0,  0,0,0,1},
 	 fill_offset = 0,   %% fill variation offset
-	 fill = false,      %% fill requested
+	 fill_req = false,  %% fill requested
 	 fill_count = undefined, %% count when fill started
 
 	 %% drum => ID, [ ID => drum  whem allocated ]
@@ -159,6 +154,7 @@
 		  },
 
 	 drum_map = #{},  %% drum name => voice id
+	 volume_map = #{}, %% drum name => volume
 	 drum_set_dir :: file:name_all(),  %% dir path to drums
 
 	 clock,           %% clock timer
@@ -289,11 +285,6 @@ init(Opts) ->
 			   Selected),
     Seq = #lesson{chord=_Chord} = lesson_first({raising,major}),
 
-    %% Load drums
-    %% DrumSet = "Default",
-    %% DrumSet = "Roland_R8",
-    %% DrumSet = "Korg_N1R",
-    %% DrumSet = "Kawai_XD5",
     DrumSet = application:get_env(midi, drum_set, "Default"),
     DrumSetDir = case application:get_env(midi, drum_dir, undefined) of
 		     undefined ->
@@ -301,11 +292,27 @@ init(Opts) ->
 		     DDir -> DDir
 		 end,
     Drums = alloc_drums(),
-    Drums1 = load_drums(filename:join(DrumSetDir, DrumSet), Drums),
+    {Drums1,Volumes1} = load_drums(filename:join(DrumSetDir, DrumSet), Drums),
+    RythmDir = case application:get_env(midi, rythm_dir, undefined) of
+		   undefined ->
+		       filename:join([code:lib_dir(midi),"tools","Rythm"]);
+		   RDir -> RDir
+	       end,
+    Rythm = application:get_env(midi, rythm, "Default"),
+    RythmMap = load_rythm(RythmDir, Rythm),
+    Pattern = maps:get(pattern, RythmMap, #{}),
+    NumTicks = tuple_size(maps:get(closed_hi_hat, Pattern, {1,0,0,0})),
+    Fill = maps:get(fill, RythmMap, #{}),
+    FillNumTicks = tuple_size(maps:get(closed_hi_hat, Fill, {1,0,0,0})),
+    
+    RythmDivision = maps:get(division, RythmMap, ?DEFAULT_DIVISION),
+    RythmBpm = maps:get(bpm, RythmMap, ?DEFAULT_BPM),
 
-    Division = proplists:get_value(division, Opts, ?DEFAULT_DIVISION),
+    Division0 = proplists:get_value(division, Opts, RythmDivision),
+    Division = Division0 + (NumTicks rem Division0),
+
     Clock = erlang:start_timer(16#ffffffff, undefined, undefined),
-    Bpm = proplists:get_value(bpm, Opts, ?DEFAULT_BPM),
+    Bpm = proplists:get_value(bpm, Opts, RythmBpm),
     epxw:set_status_text("Bpm: "++integer_to_list(Bpm)),
     MilliToDiv = round((60000 / Bpm)/Division),
     %% io:format("ms=~w\n", [MilliToDiv]),
@@ -326,7 +333,14 @@ init(Opts) ->
 		  clock = Clock,
 		  next_clock_tick = ClockTick - MilliToDiv,  %% remain!
 		  drum_map = Drums1,
+		  volume_map = Volumes1,
 		  drum_set_dir = DrumSetDir,
+		  %% ythm_map = RythmMap,
+		  rythm_dir = RythmDir,
+		  pattern = Pattern,
+		  pattern_num_ticks = NumTicks,
+		  fill = Fill,
+		  fill_num_ticks = FillNumTicks,
 		  pressure=#{},
 		  drum_font = {DFont,epx:font_info(DFont, ascent)},
 		  main_font = {Font,epx:font_info(Font, ascent)},
@@ -345,34 +359,63 @@ alloc_drums() ->
 
 load_drums(Dir, Map) ->
     {ok,List} = file:list_dir(Dir),
-    lists:foreach(
-      fun(File) ->
-	      case File of
-		  "42_"++_ ->
-		      ID = maps:get(closed_hi_hat, Map),
-		      alsa_play:clear(ID),
-		      alsa_play:append_file(ID, 0, filename:join(Dir, File));
-		  "46_"++_ ->
-		      ID = maps:get(open_hi_hat, Map),
-		      alsa_play:clear(ID),
-		      alsa_play:append_file(ID, 0, filename:join(Dir, File));
-		  "38_"++_ ->
-		      ID = maps:get(snare_drum, Map),
-		      alsa_play:clear(ID),
-		      alsa_play:append_file(ID, 0, filename:join(Dir, File));
-		  "36_"++_ ->
-		      ID = maps:get(bass_drum, Map),
-		      alsa_play:clear(ID),
-		      alsa_play:append_file(ID, 0, filename:join(Dir, File));
-		  "49_"++_ ->
-		      ID = maps:get(crash_cymbal, Map),
-		      alsa_play:clear(ID),
-		      alsa_play:append_file(ID, 0, filename:join(Dir, File));
-		  _ ->
-		      ignore
-	      end
-      end, List),
-    Map.
+    case lists:member("set.config", List) of
+	true -> 
+	    {ok,[Set|_]} = file:consult(filename:join(Dir, "set.config")),
+	    load_drum_map(Dir, Set, Map);
+	false ->
+	    Vol = 0.7,
+	    load_drum_dir(List, Dir, Vol, Map, #{})
+    end.
+
+load_drum_dir([File="42_"++_|List], Dir, Vol, Map, VMap) ->
+    load_drum_dir_(closed_hi_hat, List, File, Dir, Vol, Map, VMap);
+load_drum_dir([File="46_"++_|List], Dir, Vol, Map, VMap) ->
+    load_drum_dir_(open_hi_hat, List, File, Dir, Vol, Map, VMap);
+load_drum_dir([File="38_"++_|List], Dir, Vol, Map, VMap) ->
+    load_drum_dir_(snare_drum, List, File, Dir, Vol, Map, VMap);
+load_drum_dir([File="36_"++_|List], Dir, Vol, Map, VMap) ->
+    load_drum_dir_(bass_drum, List, File, Dir, Vol, Map, VMap);
+load_drum_dir([File="49_"++_|List], Dir, Vol, Map, VMap) ->
+    load_drum_dir_(crash_cymbal, List, File, Dir, Vol, Map, VMap);
+load_drum_dir([_|List], Dir, Vol, Map, VMap) ->
+    load_drum_dir(List, Dir, Vol, Map, VMap);
+load_drum_dir([], _Dir, _Vol, Map, VMap) ->
+    {Map, VMap}.
+
+load_drum_dir_(Drum, List, File, Dir, Vol, Map, VMap) ->
+    ID = maps:get(Drum, Map),
+    alsa_play:clear(ID),
+    alsa_play:set_volume(ID, Vol),
+    %% FIXME: fILL with some silence and insert a jump instruction
+    %% that can vary the beat offset
+    alsa_play:append_file(ID, 0, filename:join(Dir, File)),
+    load_drum_dir(List, Dir, Vol, Map, VMap#{ Drum => Vol }).
+
+load_drum_map(Dir, Set, Map) ->
+    Drums = [closed_hi_hat, open_hi_hat, snare_drum,
+	     bass_drum, crash_cymbal],
+    load_drum_map_(Drums, Dir, Set, Map, #{}).
+
+load_drum_map_([D|Ds], Dir, Set, Map, VMap) ->
+    ID = maps:get(D, Map),
+    alsa_play:clear(ID),
+    Drum  = maps:get(D, Set),
+    case maps:get(file, Drum, undefined) of
+	undefined -> %% look form midi_chan and then xy_<name>.wav ?
+	    load_drum_map_(Ds, Dir, Set, Map, VMap);
+	File ->
+	    Vol = maps:get(volume, Drum, 0.7),
+	    alsa_play:set_volume(ID, Vol),
+	    alsa_play:append_file(ID, 0, filename:join(Dir, File)),
+	    load_drum_map_(Ds, Dir, Set, Map, VMap#{ D => Vol })
+    end;
+load_drum_map_([], _Dir, _Set, Map, VMap) ->
+    {Map, VMap}.
+
+load_rythm(Dir, File) ->
+    {ok,[R|_]} = file:consult(filename:join(Dir, File)),
+    R.
 
 make_buttons(Bs, Def) ->
     make_buttons_(Bs, 32, Def).
@@ -483,18 +526,19 @@ handle_info({midi,In,Event,_Delta}, State) when In =:= State#state.midi_in ->
 handle_info({timeout, _Ref, tick}, State=#state { pause = true }) ->
     {noreply, State};
 handle_info({timeout, _Ref, tick}, State) ->
-    N  = tuple_size(State#state.closed_hi_hat),
+    N  = State#state.pattern_num_ticks,
     Count = State#state.count,
     I = (Count rem N) + 1,
-    FillStart = ((I =:= 1) andalso  State#state.fill),
+    FillStart = ((I =:= 1) andalso State#state.fill_req),
     Fill = FillStart orelse is_integer(State#state.fill_count),
-    IDList = id_list(Fill, Count, N, State),
-    alsa_play:restart(IDList),
+    UpdateList = id_list(Fill, Count, N, State),
+    alsa_play:update(UpdateList),
+    IDList = [ID || {ID,_} <- UpdateList],
     alsa_play:run(IDList),
 
-    draw_tick(I, N, State#state.fill, State#state.main_font),
+    draw_tick(I, N, State#state.fill_req, State#state.main_font),
 
-    {Fill1,FillCount1,FillOffset1} =
+    {FillReq1,FillCount1,FillOffset1} =
 	if is_integer(State#state.fill_count) ->
 		if (Count - State#state.fill_count) =:= 8 ->
 			{false,undefined,State#state.fill_offset+1};
@@ -505,7 +549,7 @@ handle_info({timeout, _Ref, tick}, State) ->
 		%% fill starting, rearma
 		{false,Count,State#state.fill_offset};
 	   true ->
-		{State#state.fill,undefined,State#state.fill_offset}
+		{State#state.fill_req,undefined,State#state.fill_offset}
 	end,
     ClockTick = erlang:read_timer(State#state.clock),
     MilliToDiv = State#state.milli_to_div,
@@ -516,7 +560,7 @@ handle_info({timeout, _Ref, tick}, State) ->
 	    erlang:start_timer(MilliToDiv-Delta, self(), tick),
 	    {noreply, State#state{count=Count+1,
 				  next_clock_tick = NextClockTick-MilliToDiv,
-				  fill = Fill1, 
+				  fill_req = FillReq1, 
 				  fill_count = FillCount1,
 				  fill_offset = FillOffset1
 				 }};
@@ -524,7 +568,7 @@ handle_info({timeout, _Ref, tick}, State) ->
 	    erlang:start_timer(MilliToDiv, self(), tick),
 	    {noreply, State#state{count=Count+1,
 				  next_clock_tick = ClockTick-MilliToDiv,
-				  fill = Fill1, 
+				  fill_req = FillReq1, 
 				  fill_count = FillCount1,
 				  fill_offset = FillOffset1
 				 }}
@@ -595,44 +639,48 @@ code_change(_OldVsn, State, _Extra) ->
 %% @end
 %%--------------------------------------------------------------------
 
-id_list(true, Count, _N, State) ->
-    N = tuple_size(State#state.f1_closed_hi_hat),  %% new size
+id_list(true, Count, _N, State=#state{fill=Fill, volume_map=Vol}) ->
+    N = State#state.fill_num_ticks,
     io:format("fill: offset=~w\n", [State#state.fill_offset]),
     Count1 = Count + State#state.fill_offset,
     I = (Count1 rem N) + 1,
     J = (Count1 div N),
-    cons_drum(I, J, closed_hi_hat, State#state.f1_closed_hi_hat, State,
-    cons_drum(I, J, open_hi_hat,   State#state.f1_open_hi_hat, State, 
-    cons_drum(I, J, bass_drum,     State#state.f1_bass_drum, State, 
-    cons_drum(I, J, snare_drum,    State#state.f1_snare_drum, State, 
-    cons_drum(I, J, crash_cymbal,  State#state.f1_crash_cymbal, State, [])))));
-id_list(false, Count, N, State) ->    
+    cons_drum(I, J, closed_hi_hat, Fill, Vol, State,
+    cons_drum(I, J, open_hi_hat,   Fill, Vol, State, 
+    cons_drum(I, J, bass_drum,     Fill, Vol, State, 
+    cons_drum(I, J, snare_drum,    Fill, Vol, State, 
+    cons_drum(I, J, crash_cymbal,  Fill, Vol, State, [])))));
+id_list(false, Count, N, State=#state { pattern=Pat, volume_map=Vol}) ->
     I = (Count rem N) + 1,
     J = (Count div N),
-    cons_drum(I, J, closed_hi_hat, State#state.closed_hi_hat, State,
-    cons_drum(I, J, open_hi_hat,   State#state.open_hi_hat, State, 
-    cons_drum(I, J, bass_drum,     State#state.bass_drum, State, 
-    cons_drum(I, J, snare_drum,    State#state.snare_drum, State, 
-    cons_drum(I, J, crash_cymbal,  State#state.crash_cymbal, State, []))))).
+    cons_drum(I, J, closed_hi_hat, Pat, Vol, State,
+    cons_drum(I, J, open_hi_hat,   Pat, Vol, State, 
+    cons_drum(I, J, bass_drum,     Pat, Vol, State, 
+    cons_drum(I, J, snare_drum,    Pat, Vol, State, 
+    cons_drum(I, J, crash_cymbal,  Pat, Vol, State, []))))).
 
 
-cons_drum(I, J, Drum, Pattern, State, Acc) ->
+cons_drum(I, J, Drum, PatMap, VolMap, State, Acc) ->
+    Pattern = maps:get(Drum, PatMap),
+    DVol = maps:get(Drum, VolMap),
     case element(I, Pattern) of
-	0 -> Acc;
-	1 -> %% repeat every lap
+	Vol when is_number(Vol), Vol > 0, Vol =< 1 ->
 	    case maps:get(Drum, State#state.drum_map,undefined) of
 		undefined -> Acc;
-		ID -> [ID|Acc]
+		ID -> [{ID,[{volume,DVol*Vol},restart]}|Acc]
 	    end;
-	N -> %% repeat every N'th time
+	{N,Vol} when is_number(Vol), Vol > 0, Vol =< 1 -> 
+	    %% repeat every N'th time
 	    case J rem N of
 		0 ->
 		    case maps:get(Drum, State#state.drum_map,undefined) of
 			undefined -> Acc;
-			ID -> [ID|Acc]
+			ID -> [{ID,[{volume,DVol*Vol},restart]}|Acc]
 		    end;
 		_ -> Acc
-	    end
+	    end;
+	0 -> Acc;
+	{_,0} -> Acc
     end.
 
 toggle_pause(State) ->
@@ -764,7 +812,7 @@ draw(top, Pixels, _Rect, State) ->
     epx_gc:set_border_width(1),
     epx_gc:set_fill_color(blue),
 
-    Empty = erlang:make_tuple(tuple_size(State#state.closed_hi_hat), 0),
+    Empty = erlang:make_tuple(State#state.pattern_num_ticks, 0),
 
     Left = 8, %% ?LEFT_BAR_SIZE
     Top  = 10,
@@ -772,15 +820,20 @@ draw(top, Pixels, _Rect, State) ->
     H    = 10,
     draw_grid_line(Pixels, Left+40, 0, W, H, 1, Empty),
     epx:draw_string(Pixels,Left,    Top+Ascent, "closed:"),
-    draw_grid_line(Pixels, Left+40, Top, W, H, 1, State#state.closed_hi_hat),
+    draw_grid_line(Pixels, Left+40, Top, W, H, 1, 
+		   maps:get(closed_hi_hat, State#state.pattern)),
     epx:draw_string(Pixels,Left,    Top+12+Ascent, "open:"),
-    draw_grid_line(Pixels, Left+40, Top+12, W, H, 1, State#state.open_hi_hat),
+    draw_grid_line(Pixels, Left+40, Top+12, W, H, 1, 
+		   maps:get(open_hi_hat, State#state.pattern)),
     epx:draw_string(Pixels,Left,    Top+24+Ascent, "snare:"),
-    draw_grid_line(Pixels, Left+40, Top+24, W, H, 1, State#state.snare_drum),
+    draw_grid_line(Pixels, Left+40, Top+24, W, H, 1,
+		   maps:get(snare_drum, State#state.pattern)),
     epx:draw_string(Pixels,Left,    Top+36+Ascent, "bass:"),
-    draw_grid_line(Pixels, Left+40, Top+36, W, H, 1, State#state.bass_drum),
+    draw_grid_line(Pixels, Left+40, Top+36, W, H, 1,
+		   maps:get(bass_drum, State#state.pattern)),
     epx:draw_string(Pixels,Left,    Top+48+Ascent, "crash:"),
-    draw_grid_line(Pixels, Left+40, Top+48, W, H, 1, State#state.crash_cymbal),
+    draw_grid_line(Pixels, Left+40, Top+48, W, H, 1, 
+		   maps:get(crash_cymbal, State#state.pattern)),
     State;
 %% draw left bar (practice selection)
 draw(left, Pixels, _Rect, State) ->
@@ -813,7 +866,7 @@ draw_grid_line(_,_X,_Y,_W,_H,_I,_Bits) ->
     ok.
 
 toggle_grid({X,Y}, State) ->
-    Size = tuple_size(State#state.closed_hi_hat),
+    Size = State#state.pattern_num_ticks,
     Left = 8,
     Top  = 10,
     W    = 10,
@@ -823,22 +876,23 @@ toggle_grid({X,Y}, State) ->
 	    I = trunc(X - (Left+40)) div (W+1),
 	    J = trunc(Y - Top) div (H+2),
 	    %% io:format("I=~w, J=~w\n", [I, J]),
+	    Pattern = State#state.pattern,
 	    case J of
 		0 ->
-		    Set = toggle_element(I+1, State#state.closed_hi_hat),
-		    State#state{ closed_hi_hat = Set };
+		    Pattern1 = toggle_element(I+1, Pattern, closed_hi_hat),
+		    State#state{ pattern = Pattern1 };
 		1 ->
-		    Set = toggle_element(I+1, State#state.open_hi_hat),
-		    State#state{ open_hi_hat = Set };
+		    Pattern1 = toggle_element(I+1, Pattern, open_hi_hat),
+		    State#state{ pattern = Pattern1 };
 		2 ->
-		    Set = toggle_element(I+1, State#state.snare_drum),
-		    State#state{ snare_drum = Set };
+		    Pattern1 = toggle_element(I+1, Pattern, snare_drum),
+		    State#state{ pattern = Pattern1 };
 		3 ->
-		    Set = toggle_element(I+1, State#state.bass_drum),
-		    State#state{ bass_drum = Set };
+		    Pattern1 = toggle_element(I+1, Pattern, bass_drum),
+		    State#state{ pattern = Pattern1 };
 		4 ->
-		    Set = toggle_element(I+1, State#state.crash_cymbal),
-		    State#state{ crash_cymbal = Set };
+		    Pattern1 = toggle_element(I+1, Pattern, crash_cymbal),
+		    State#state{ pattern = Pattern1 };
 		_ ->
 		    State
 	    end;
@@ -846,11 +900,14 @@ toggle_grid({X,Y}, State) ->
 	    State
     end.
 
-toggle_element(I, Tuple) ->
-    case element(I, Tuple) of
-	0 -> setelement(I, Tuple, 1);
-	_N -> setelement(I, Tuple, 0)
-    end.
+%% FIXME: adjust beat volume
+toggle_element(I, Pattern, Drum) ->
+    Tuple = maps:get(Drum, Pattern),
+    Tuple1 = case element(I, Tuple) of
+		 0 -> setelement(I, Tuple,  1);
+		 _N -> setelement(I, Tuple, 0)
+	     end,
+    maps:put(Drum, Tuple1, Pattern).
 
 %% mark current tick red and clear previous tick
 draw_tick(I,N,Fill,BFont) ->
@@ -924,7 +981,7 @@ key_press({key_press, Sym, _Mod, _Code}, State) ->
   	    play(crash_cymbal, State);
 	$f ->
 	    io:format("fill = true\n"),
-  	    State#state { fill = true };
+  	    State#state { fill_req = true };
 	up ->
 	    update_bpm_value(+1, State);
 	down ->
@@ -958,8 +1015,9 @@ command(Command, Mod, State) ->
     case Command of
 	{load_drumset, Name} ->
 	    Dir = filename:join(State#state.drum_set_dir, Name),
-	    Drums = load_drums(Dir, State#state.drum_map),
-	    {noreply, State#state { drum_map = Drums  }};
+	    {Drums,Volums} = load_drums(Dir, State#state.drum_map),
+	    {noreply, State#state { drum_map = Drums,
+				    volume_map = Volums }};
 	_ ->
 	    {noreply, State}
     end.
@@ -1030,7 +1088,6 @@ load_value(Key, Env, Profile) ->
 load_color(Scheme, Key, Env, Profile) ->
     Value = load_value(Key, Env, Profile),
     epx_profile:color(Scheme, Value).
-
 
 
 -define(WHITE_KEY_WIDTH, 32).

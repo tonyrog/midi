@@ -34,14 +34,14 @@
 
 -record(after_touch,
 	{
-	 char :: 0..15,
+	 chan :: 0..15,
 	 note :: 0..127,
 	 value :: 0..127
 	}).
 
 -record(control_change,
 	{
-	 char :: 0..15,
+	 chan :: 0..15,
 	 control :: 0..127,
 	 param :: 0..127
 	}).
@@ -67,7 +67,13 @@
 -record(meta,
 	{
 	 type :: atom(),
-	 data 
+	 params :: [byte()] | binary() | term()
+	}).
+
+-record(sys,
+	{
+	 type   :: atom(),
+	 params :: [byte()] | binary()
 	}).
 
 -define(USEC_PER_MINUTE, 60000000).
@@ -168,10 +174,10 @@
 -define(MIDI_CTRL_PHASER_LEVEL,             95).
 -define(MIDI_CTRL_DATA_BUTTON_INCREMENT,    96).
 -define(MIDI_CTRL_DATA_BUTTON_DECREMENT,    97).
--define(MIDI_CTRL_NON_REGISTERED_PARAMETER_FINE, 98).
--define(MIDI_CTRL_NON_REGISTERED_PARAMETER,  99).
--define(MIDI_CTRL_REGISTERED_PARAMETER_FINE, 100).
--define(MIDI_CTRL_REGISTERED_PARAMETER,     101).
+-define(MIDI_CTRL_NON_REGISTERED_PARAMETER_FINE, 98). %% LSB
+-define(MIDI_CTRL_NON_REGISTERED_PARAMETER,  99).     %% MSB
+-define(MIDI_CTRL_REGISTERED_PARAMETER_FINE, 100).    %% LSB
+-define(MIDI_CTRL_REGISTERED_PARAMETER,     101).     %% MSB
 -define(MIDI_CTRL_ALL_SOUND_OFF,            120).
 -define(MIDI_CTRL_ALL_CONTROLLERS_OFF,      121).
 -define(MIDI_CTRL_LOCAL_KEYBOARD,           122).
@@ -374,6 +380,39 @@
 -define(GM_DRUM_Open_Cuica, 79).
 -define(GM_DRUM_Mute_Triangle, 80).
 -define(GM_DRUM_Open_Triangle, 81).
+
+%% sysex header
+-define(SYSEX_NON_REALTIME, 16#7E).
+-define(SYSEX_REALTIME,     16#7F).
+
+%% sysex messages (non-realtime)
+-define(SYSEX_DUMP_HEADER, 16#01).
+-define(SYSEX_DATA_PACKET, 16#02).
+-define(SYSEX_DUMP_REQUEST, 16#03).
+
+-define(SYSEX_SAMPLE_DUMP_EXTENSIONS, 16#05).
+-define(SYSEX_DEVICE_INQUIRY, 16#06).
+-define(DEVICE_INQUIRY_REQUEST, 1).
+-define(DEVICE_INQUIRY_REPLY,   2).
+
+-define(SYSEX_FILE_DUMP, 16#07).
+-define(FILE_DUMP_HEADER, 1).
+-define(FILE_DUMP_DATA_PACKET, 2).
+-define(FILE_DUMP_REQUEST, 3).
+
+-define(SYSEX_MIDI_TUNING_STANDARD, 16#08).
+-define(SYSEX_GENERAL_MIDI, 16#09).
+-define(GERNERAL_MIDI_ON, 1).
+-define(GERNERAL_MIDI_OFF, 2).
+
+-define(SYSEX_DEVICE_EOF, 16#7B).
+-define(SYSEX_DEVICE_WAIT, 16#7C).
+-define(SYSEX_DEVICE_CANCEL, 16#7D).
+-define(SYSEX_DEVICE_NAK, 16#7E).
+-define(SYSEX_DEVICE_ACK, 16#7F).
+
+
+
 
 -endif.
 

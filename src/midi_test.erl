@@ -31,3 +31,26 @@ test_pan_(Synth, Pan, PanStep, PanEnd, Note, Delay)
 test_pan_(_Synth, _Pan, _PanStep, _PanEnd, _Note, _Delay) ->
     ok.
 
+
+test_f0_f7() ->
+    Data = <<
+	     16#0,
+	     16#F0, 16#03, 16#43, 16#12, 16#00,
+	     16#81, 16#48,
+	     16#F7, 16#06, 16#43, 16#12, 16#00, 16#43, 16#12, 16#00,
+	     16#64,    
+	     16#F7, 16#04, 16#43, 16#12, 16#00, 16#F7
+	   >>,
+    S = midi_codec:init(true, Data),
+    midi_file:parse_track(S, []).
+
+test_f0() ->
+    Data = <<
+	     16#0,
+	     16#F0, 16#0D, 16#43, 16#12, 16#00,
+	            16#43, 16#12, 16#00, 16#43, 16#12, 16#00,
+	            16#43, 16#12, 16#00, 16#F7
+	   >>,
+    S = midi_codec:init(true, Data),
+    midi_file:parse_track(S, []).
+

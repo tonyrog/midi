@@ -7,7 +7,10 @@
 
 -module(midi_file).
 
--export([load/1]).
+-export([new/1]).
+-export([new_track/1, add_event/2]).
+-export([new_note_on/4, new_note_off/4]).
+-export([load/1, save/2]).
 -export([text_expand/1,text_expand/2]).
 -export([read_tune/1]).
 -export([read_track/2]).
@@ -15,6 +18,7 @@
 -export([write_tune/2, write_tune/3, write_tune/4]).
 -export([write_track/2]).
 -export([write_chunk/3]).
+-export([parse_track/2]).
 
 -ifdef(OTP_RELEASE). %% this implies 21 or higher
 -define(EXCEPTION(Class, Reason, Stacktrace), Class:Reason:Stacktrace).
@@ -24,6 +28,48 @@
 -define(GET_STACK(_), erlang:get_stacktrace()).
 -endif.
 
+-include("../include/midi.hrl").
+
+new(Filename) ->
+    {ok, Fd} = file:open(Filename, [write]),
+    %% io:format("new: Fd = ~p\n", [Fd]),
+    put(Fd, []),
+    Fd.
+
+new_track(Fd) ->
+    TrackBuf = prim_buffer:new(),
+    TRef = {Fd,TrackBuf},
+    put(Fd, [TRef|get(Fd)]),
+    %% io:format("new: track = ~p\n", [TRef]),
+    TRef.
+
+add_event(_TRef={_Fd,TrackBuf}, EventData) ->
+    prim_buffer:write(TrackBuf, EventData).
+
+new_note_on(Duration,Note,Velocity,Chan) ->
+    Bin0 = midi_codec:length_encode(Duration),
+    Bin1 = midi_codec:event_encode(#note_on{chan=Chan,note=Note,velocity=Velocity}),
+    [Bin0, Bin1].
+
+new_note_off(Duration,Note,Velocity,Chan) ->
+    Bin0 = midi_codec:length_encode(Duration),
+    Bin1 = midi_codec:event_encode(#note_off{chan=Chan,note=Note,velocity=Velocity}),
+    [Bin0, Bin1].
+
+save(Fd, _Filename) ->
+    %% io:format("save: Fd = ~p\n", [Fd]),
+    write_tune(Fd, 64),
+    List = lists:reverse(get(Fd)),
+    %% io:format("List = ~p\n", [List]),
+    lists:foreach(
+      fun({_Fd,TrackBuf}) ->
+	      Size = prim_buffer:size(TrackBuf),
+	      IOVec = prim_buffer:read_iovec(TrackBuf, Size),
+	      write_track(Fd, IOVec)
+      end, List),
+    file:close(Fd),
+    erase(Fd),
+    ok.
 
 load(File) ->
     case file:open(File,[read,raw,binary]) of
@@ -72,7 +118,7 @@ read_track(Fd, I) ->
     case read_chunk(Fd) of
 	{ok,_Chunk={<<"MTrk">>,Data}} ->
 	    %% io:format("Track = ~p\n", [_Chunk]),
-	    State = midi_codec:init(Data),
+	    State = midi_codec:init(true, Data),
 	    case parse_track(State, []) of
 		{ok,Cmds} ->
 		    {I,Cmds};
@@ -84,7 +130,8 @@ read_track(Fd, I) ->
     end.
 
 write_track(Fd, Data) ->
-    write_chunk(Fd, <<"MTrk">>, Data).
+    End = midi_codec:event_encode(#meta{type=end_of_track}),
+    write_chunk(Fd, <<"MTrk">>, [Data,End]).
 
 parse_track(State, Acc) ->
     case midi_codec:scan_delta(State) of
@@ -95,6 +142,7 @@ parse_track(State, Acc) ->
 		    {ok,lists:reverse([Delta|Acc])};
 		{{Status,Params}, State2} ->
 		    Event = midi_codec:event_decode(Status,Params),
+		    io:format("Event = ~p\n", [Event]),
 		    parse_track(State2, [Event,Delta|Acc])
 	    end;
 	{eot, _State2} ->
@@ -116,7 +164,8 @@ read_chunk(Fd) ->
     end.
 
 write_chunk(Fd, ID, Data) ->
-    file:write(Fd, <<ID:4/binary,(byte_size(Data)):32,Data/binary>>).
+    Size = iolist_size(Data),
+    file:write(Fd, [<<ID:4/binary,Size:32>>,Data]).
     
 %%
 %% Utility to exand environment "variables" in unicode text

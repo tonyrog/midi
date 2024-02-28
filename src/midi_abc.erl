@@ -127,7 +127,7 @@ play_notes_(Fd,[double_bar|Ns],Ctx,Sig,SP,RP) ->
 play_notes_(Fd,[thin_thick|Ns],Ctx,Sig,SP,RP) ->
     Sig1 = drop_note_sig(Sig),
     play_notes(Fd,Ns,Ctx,Sig1,SP,RP);
-play_notes_(Fd,[think_thin|Ns],Ctx,Sig,SP,RP) ->
+play_notes_(Fd,[thick_thin|Ns],Ctx,Sig,SP,RP) ->
     Sig1 = drop_note_sig(Sig),
     play_notes(Fd,Ns,Ctx,Sig1,SP,RP);
 

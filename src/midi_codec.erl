@@ -7,8 +7,8 @@
 
 -module(midi_codec).
 
--export([encode/1, decode/1]).
--export([init/1, scan/1, scan/2]).
+-export([encode/1, decode/1, decode/2]).
+-export([init/0, init/1, init/2, scan/1, scan/2]).
 -export([scan_delta/1]).
 -export([event_decode/2, event_encode/1]).
 -export([events_encode/1]).
@@ -20,15 +20,36 @@
 
 -include("../include/midi.hrl").
 
-decode(Data) ->
-    decode_all(init(Data)).
+-record(s, 
+	{
+	 state = status :: status | params | params_eox | 
+			   data | meta | sys_f0 | sys_f7 | vl,
+	 buf  = <<>> :: binary(),
+	 status  = 0 :: 16#f8..16#ff,
+	 running = 0 :: 16#f8..16#ff,
+	 len = 0,  %% number of parameters or number of bytes
+	 params = [] :: [0..127],
+	 midi_file = false :: boolean(),  %% parse from file or midi stream
+	 callback = undefined :: undefined | fun((#sys{}) -> ok)
+	}).
 
-decode_all(S) ->
+%% assume decode from file!
+decode(Data) ->
+    decode(init(), Data).
+
+%% continue decode after more is detected with more data
+decode(S=#s{buf=Buf}, Data1) ->
+    Buf1 = <<Buf/binary,Data1/binary>>,
+    decode_(S#s{buf=Buf1}, []).
+
+decode_(S,Acc) ->
     case scan(S) of
+	{more,S1}  ->
+	    {more,S1,Acc};
+	{eot,_S1} ->
+	    {ok,lists:reverse(Acc)};
 	{{Status,Params},S1} ->
-	    [event_decode(Status,Params) | decode_all(S1)];
-	{more,_} -> [];
-	{eot,_} -> []
+	    decode_(S1,[event_decode(Status,Params) | Acc])
     end.
 
 encode(List) when is_list(List) ->
@@ -36,276 +57,328 @@ encode(List) when is_list(List) ->
 encode(Event) when is_tuple(Event) ->
     event_encode(Event).
 
+init() ->
+    init(false,<<>>).
+init(Data) when is_binary(Data) ->
+    init(false,Data);
+init(MidiFile) when is_boolean(MidiFile) ->
+    init(MidiFile,<<>>).
+init(MidiFile,Data) when is_boolean(MidiFile), is_binary(Data) ->
+    #s { midi_file=MidiFile, buf = Data }.
 
-init(Data) ->
-    {status, Data, 0, 0, []}.
-
-%% continue
-scan(St={_State,<<>>,_Status,_Running,_Params}) ->
+scan(St=#s{state=status,buf=(<<>>)}) ->
+    {eot,St};
+scan(St=#s{buf=(<<>>)}) ->
     {more,St};
-scan({State,Data,Status,Running,Params}) ->
-    parse(State,Data,Status,Running,Params).
+scan(S=#s{state=State,buf=Data}) ->
+    parse(State,Data,S).
 
 %% continue
-scan(Bin, {State,Data,Status,Running,Params}) ->
-    parse(State,<<Data/binary,Bin/binary>>,Status,Running,Params).
+scan(Bin, S=#s{state=State,buf=Buf}) ->
+    parse(State, <<Buf/binary,Bin/binary>>, S).
 
-parse(status, Data= <<0:1,_:7,_/binary>>, _Status, Running, _Params) ->
-    %% mark as running event?
-    parse(params, Data, Running, Running, []);
-parse(status, <<Status,Data/binary>>, _Status, Running, _Params) ->
-    if Status band 16#f0 =:= 16#f0 ->
-	    if Status =< 16#f7 ->
-		    parse(params,Data,Status,0,[]);
+parse(data, Data, S=#s{len=0}) ->
+    Event = {S#s.status, lists:reverse(S#s.params)},
+    {Event, S#s{state=status,buf=Data,status=0,params=[]}};
+parse(data, <<B,Data/binary>>, S=#s{len=Len}) ->
+    parse(data, Data, S#s { len=Len-1, params=[B|S#s.params] });
+parse(Status, Data=(<<B,Data1/binary>>), S) ->
+    %%io:format("parse ~s: ~p [s=~p]\n",[Status,Data,S]),
+    if B >= 16#f8, B =< 16#ff -> %% real time (fixme: check file scan)
+	    if B =:= 16#ff, S#s.midi_file =:= true ->
+		    parse(meta,Data1,S#s{len=0,status=B});
 	       true ->
-		    parse(params,Data,Status,Running,[])
+		    real_time_event(B, S),
+		    parse(Status, Data1, S)
 	    end;
-       true -> 
-	    parse(params,Data,Status,Status,[])
+       true ->
+	    parse_(Status, Data, S)
+    end.
+%% more eot?
+
+parse_(status, Data=(<<B,Data1/binary>>), S) ->
+    if B band 16#80 =:= 0 ->
+	    parse_status_(S#s.running, Data, S);
+       B band 16#f0 =:= 16#f0 -> %% sys
+	    if B =< 16#f7 -> %% non real time
+		    parse_status_(B, Data1, S#s{running = 0 });
+	       true ->
+		    parse_status_(B, Data1, S#s{running = 0 })
+	    end;
+       true ->
+	    parse_status_(B, Data1, S#s{running=B, status=B})
     end;
-parse(status, <<>>, Status, Running, Params) ->
-    {eot, {status,<<>>,Status,Running,Params}};
-parse(params,Data,Status,Running,Params) ->
+parse_(params, Data=(<<B,Data1/binary>>), S) ->
+    case S#s.len of
+	0 -> event(Data, S);
+	N ->
+	    Ps = S#s.params,
+	    parse(params, Data1, S#s { len=N-1, params = [B|Ps] })
+    end;
+parse_(params_eox, Data=(<<B,Data1/binary>>), S) ->
+    if B band 16#80 =/= 0 ->
+	    if B =:= 16#f7 ->
+		    event(Data1, S);
+	       true ->
+		    event(Data, S)
+	    end;
+       true ->
+	    Ps = S#s.params,
+	    parse(params_eox, Data1, S#s { params = [B|Ps] })
+    end;
+parse_(meta, <<Meta,Data1/binary>>, S) ->
+    parse(vl, Data1, S#s { len=0, params = [Meta] });
+parse_(sys_f0, Data, S) ->
+    parse(vl, Data, S#s { len=0, params = [] });
+parse_(sys_f7, Data, S) ->
+    parse(vl, Data, S#s { len=0, params = [] });
+parse_(vl,<<0:1,Len:7,Data/binary>>,S) ->
+    parse(data, Data, S#s{ len=Len });
+parse_(vl,<<1:1,L0:7,0:1,L1:7,Data/binary>>,S) ->
+    Len = (L0 bsl 7) bor L1,
+    parse(data, Data, S#s{ len=Len });
+parse_(vl,<<1:1,L0:7,1:1,L1:7,0:1,L2:7,Data/binary>>, S) ->
+    Len = (L0 bsl 14) bor (L1 bsl 7) bor L2,
+    parse(data, Data, S#s { len=Len });
+parse_(vl,<<1:1,L0:7,1:1,L1:7,1:1,L2:7,0:1,L3:7,Data/binary>>,S) ->
+    Len = (L0 bsl 21) bor (L1 bsl 14) bor (L2 bsl 7) bor L3,
+    parse(data, Data, S#s { len=Len });
+parse_(vl,<<_,_,_,_,_Data/binary>>,S) ->
+    {{error,bad_parameter_length},S}.
+
+%% Status = 2#1xxx_vvvv
+parse_status_(Status, Data, S) ->
     case Status bsr 4 of
 	?MIDI_EVENT_NOTEOFF ->
-	    parse(params_2,Data,Status,Running,Params);
+	    parse(params, Data, S#s { len=2, status=Status });
 	?MIDI_EVENT_NOTEON ->
-	    parse(params_2,Data,Status,Running,Params);
+	    parse(params, Data, S#s { len=2, status=Status });
 	?MIDI_EVENT_AFTERTOUCH ->
-	    parse(params_2,Data,Status,Running,Params);
+	    parse(params, Data, S#s { len=2, status=Status });
 	?MIDI_EVENT_CONTROLCHANGE ->
-	    parse(params_2,Data,Status,Running,Params);
+	    parse(params, Data, S#s { len=2, status=Status });
 	?MIDI_EVENT_PITCHBEND ->
-	    parse(params_2,Data,Status,Running,Params);
+	    parse(params, Data, S#s { len=2, status=Status });
 	?MIDI_EVENT_PROGRAMCHANGE ->
-	    parse(params_1,Data,Status,Running,Params);
+	    parse(params, Data, S#s { len=1, status=Status });
 	?MIDI_EVENT_PRESSURE ->
-	    parse(params_1,Data,Status,Running,Params);
+	    parse(params, Data, S#s { len=1, status=Status });
 	?MIDI_EVENT_SYS ->
 	    case Status band 16#0f of
-		0  -> parse(params_f7,Data,Status,Running,Params);
-		1  -> parse(params_0,Data,Status,Running,Params);
-		2  -> parse(params_2,Data,Status,Running,Params);
-		3  -> parse(params_1,Data,Status,Running,Params);
-		4  -> parse(params_0,Data,Status,Running,Params);
-		5  -> parse(params_0,Data,Status,Running,Params);
-		6  -> parse(params_0,Data,Status,Running,Params);
-		7  -> parse(params_0,Data,Status,Running,Params);
-		8  -> parse(params_0,Data,Status,Running,Params);
-		9  -> parse(params_0,Data,Status,Running,Params);
-		10 -> parse(params_0,Data,Status,Running,Params);
-		11 -> parse(params_0,Data,Status,Running,Params);
-		12 -> parse(params_0,Data,Status,Running,Params);
-		13 -> parse(params_0,Data,Status,Running,Params);
-		14 -> parse(params_0,Data,Status,Running,Params);
-		15 -> parse(params_v1,Data,Status,Running,Params)
+		0  ->
+		    if S#s.midi_file =:= true ->
+			    parse(sys_f0, Data, S#s { len=0, status=Status });
+		       true ->
+			    parse(params_eox, Data, S#s { len=0, status=Status})
+		    end;
+		1  -> parse(params,Data,S#s {len=1, status=Status });
+		2  -> parse(params,Data,S#s {len=2, status=Status });
+		3  -> parse(params,Data,S#s {len=1, status=Status });
+		4  -> parse(status,Data,S);
+		5  -> parse(status,Data,S);
+		6  -> parse(params,Data,S#s {len=0, status=Status});
+		7  ->
+		    if S#s.midi_file =:= true ->
+			    parse(sys_f7, Data, S#s {len=0, status=Status });
+		       true ->
+			    parse(status,Data,S)
+		    end;
+		15 ->
+		    if S#s.midi_file =:= true ->
+			    parse(meta,Data,S#s{len=0,status=Status});
+		       true ->
+			    real_time_event(15, S),
+			    parse(status,Data,S)
+		    end;
+		Sys ->
+		    real_time_event(Sys, S),
+		    parse(status,Data,S)
 	    end
+    end.
+
+event(Data, S) ->
+    {{S#s.status, lists:reverse(S#s.params)},
+     S#s{state=status,buf=Data,status=0,params=[]}}.
+
+real_time_event(Sys, S) ->
+    Event = sys_decode(Sys, undefined),
+    (S#s.callback)(Event).
+
+
+scan_delta(S=#s{state=status,buf=(<<>>)}) ->
+    {eot, S};
+scan_delta(S=#s{state=status,buf=Buf}) ->
+    parse_delta(Buf,S).
+
+parse_delta(<<0:1,L0:7,Data/binary>>,S) ->
+    Len = L0,
+    {{ok,Len}, S#s{buf=Data}};
+parse_delta(<<1:1,L0:7,0:1,L1:7,Data/binary>>,S) ->
+    Len = (L0 bsl 7) bor L1,
+    {{ok,Len}, S#s{buf=Data}};
+parse_delta(<<1:1,L0:7,1:1,L1:7,0:1,L2:7,Data/binary>>, S) ->
+    Len = (L0 bsl 14) bor (L1 bsl 7) bor L2,
+    {{ok,Len}, S#s{buf=Data}};
+parse_delta(<<1:1,L0:7,1:1,L1:7,1:1,L2:7,0:1,L3:7,Data/binary>>,S) ->
+    Len = (L0 bsl 21) bor (L1 bsl 14) bor (L2 bsl 7) bor L3,
+    {{ok,Len}, S#s{buf=Data}};
+parse_delta(<<_,_,_,_,_/binary>>, S) ->
+    {{error,bad_delta}, S}.
+
+
+events_encode(Es) when is_list(Es) ->
+    events_encode(<<>>,Es,[]);    
+events_encode(E) when is_tuple(E) ->
+    events_encode(<<>>,[E],[]).
+
+events_encode(Run,[E|Es],Acc) ->
+    {Run1,Acc1} = event_encode(E,Run,Acc),
+    events_encode(Run1,Es,Acc1);
+events_encode(_Run,[],Acc) ->
+    list_to_binary(lists:reverse(Acc)).
+
+event_encode(E) when is_tuple(E) ->
+    {_,[List]} = event_encode(E,<<>>,[]),
+    iolist_to_binary(List).
+
+
+event_encode(#note_off{chan=Chan,note=Note,velocity=Velocity},Run,Acc) ->
+    event_encode_(<<?MIDI_EVENT_NOTEOFF:4,Chan:4>>,
+		  Run,
+		  <<0:1, Note:7, 
+		    0:1, Velocity:7>>, 
+		  Acc);
+event_encode(#note_on{chan=Chan,note=Note,velocity=Velocity},Run,Acc) ->
+    event_encode_(<<?MIDI_EVENT_NOTEON:4,Chan:4>>,
+		  Run,
+		  <<0:1, Note:7,
+		    0:1, Velocity:7>>, 
+		  Acc);
+
+event_encode(#after_touch{chan=Chan, note=B, value=C},Run,Acc) ->
+    event_encode_(<<?MIDI_EVENT_AFTERTOUCH:4,Chan:4>>,
+		  Run,
+		  <<0:1,B:7,
+		    0:1,C:7>>, 
+		  Acc);
+event_encode(#control_change{chan=Chan,control=Control,param=Param},Run,Acc) ->
+    event_encode_(<<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4>>,
+		  Run,
+		  <<0:1,(control_encode(Control)):7,
+		    0:1,Param:7>>, 
+		  Acc);
+event_encode(#pitch_bend{chan=Chan,bend=Bend},Run,Acc) ->
+    Bend1 = clamp(Bend,-8182,8191) + 16#2000,
+    event_encode_(<<?MIDI_EVENT_PITCHBEND:4,Chan:4>>,
+		  Run,
+		  <<0:1,Bend1:7,
+		    0:1,(Bend1 bsr 7):7>>,
+		  Acc);
+event_encode(#program_change{chan=Chan,prog=Prog},Run,Acc) ->
+    event_encode_(<<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4>>,
+		  Run,
+		  <<0:1,Prog:7>>,
+		  Acc);
+event_encode(#pressure{chan=Chan,pressure=Pressure},Run,Acc) ->
+    event_encode_(<<?MIDI_EVENT_PRESSURE:4,Chan:4>>,
+		  Run,
+		  <<0:1,Pressure:7>>,
+		  Acc);
+event_encode(#sys{type=Type,params=Params},Run,Acc) ->
+    case Type of
+	ex ->      sys_event_encode(0,Params,Run,Acc);
+	sys1 ->    sys_event_encode(1,Params,Run,Acc);
+	song_position_pointer ->
+	    sys_event_encode(2,Params,Run,Acc);
+	song_select ->
+	    sys_event_encode(3,Params,Run,Acc);
+	sys4 ->    sys_event_encode(4,Params,Run,Acc);
+	sys5 ->    sys_event_encode(5,Params,Run,Acc);
+	tune_request ->
+	    sys_event_encode(6,Params,Run,Acc);
+	eox -> sys_event_encode(7,Params,Run,Acc);
+	timing_clock ->
+	    sys_event_encode(8,Params,Run,Acc);
+	sys9 -> sys_event_encode(9,Params,Run,Acc);
+	start -> sys_event_encode(10,Params,Run,Acc);
+	continue -> sys_event_encode(11,Params,Run,Acc);
+	stop -> sys_event_encode(12,Params,Run,Acc);
+	sys13 -> sys_event_encode(13,Params,Run,Acc);
+	active_sensing -> sys_event_encode(14,Params,Run,Acc)
     end;
-
-parse(params_0,Data,Status,Running,Params) ->
-    {{Status,Params},{status,Data,0,Running,[]}};
-parse(params_1,<<C,Data/binary>>,Status,Running,_Params) ->
-    {{Status,[C]},{status,Data,0,Running,[]}};
-parse(params_2,<<C1,C2,Data/binary>>,Status,Running,_Params) ->
-    {{Status,[C1,C2]},{status,Data,0,Running,[]}};
-parse(params_f7,<<16#f7,Data/binary>>,Status,Running,Params) ->
-    {{Status,lists:reverse(Params)},{status,Data,0,Running,[]}};
-parse(params_f7,<<C,Data/binary>>,Status,Running,Params) ->
-    parse(params_f7,Data,Status,Running,[C|Params]);
-parse(params_v1,<<Meta,Data/binary>>,Status,Running,Params) ->
-    parse(params_v,Data,Status,Running,[Meta|Params]);
-parse(params_v,<<0:1,L0:7,Data/binary>>,Status,Running,Params) ->
-    Len = L0,
-    parse({params_v,Len},Data,Status,Running,Params);
-parse(params_v,<<1:1,L0:7,0:1,L1:7,Data/binary>>,Status,Running,Params) ->
-    Len = (L0 bsl 7) bor L1,
-    parse({params_v,Len},Data,Status,Running,Params);
-parse(params_v,<<1:1,L0:7,1:1,L1:7,0:1,L2:7,Data/binary>>,
-      Status,Running,Params) ->
-    Len = (L0 bsl 14) bor (L1 bsl 7) bor L2,
-    parse({params_v,Len},Data,Status,Running,Params);
-parse(params_v,<<1:1,L0:7,1:1,L1:7,1:1,L2:7,0:1,L3:7,Data/binary>>,
-      Status,Running,Params) ->
-    Len = (L0 bsl 21) bor (L1 bsl 14) bor (L2 bsl 7) bor L3,
-    parse({params_v,Len},Data,Status,Running,Params);
-parse(params_v,<<_,_,_,_,Data/binary>>,Status,Running,Params) ->
-    {{error,bad_parameter_length},{params_v,Data,Status,Running,Params}};
-parse({params_v,0},Data,Status,Running,Params) ->
-    {{Status,lists:reverse(Params)},{status,Data,0,Running,[]}};
-parse({params_v,I},<<C,Data/binary>>,Status,Running,Params) ->
-    parse({params_v,I-1},Data,Status,Running,[C|Params]);
-parse(State,<<>>,Status,Running,Params) ->
-    {more, {State,<<>>,Status,Running,lists:reverse(Params)}}.
-
-scan_delta({status,<<>>,Status,Running,Params}) ->
-    {eot, {status,<<>>,Status,Running,Params}};
-scan_delta({State,Data,Status,Running,Params}) ->
-    parse_delta(Data,State,Status,Running,Params).
-
-parse_delta(<<0:1,L0:7,Data/binary>>,State,Status,Running,Params) ->
-    Len = L0,
-    {{ok,Len}, {State,Data,Status,Running,Params}};
-parse_delta(<<1:1,L0:7,0:1,L1:7,Data/binary>>,State,Status,Running,Params) ->
-    Len = (L0 bsl 7) bor L1,
-    {{ok,Len}, {State,Data,Status,Running,Params}};
-parse_delta(<<1:1,L0:7,1:1,L1:7,0:1,L2:7,Data/binary>>,
-	    State,Status,Running,Params) ->
-    Len = (L0 bsl 14) bor (L1 bsl 7) bor L2,
-    {{ok,Len}, {State,Data,Status,Running,Params}};
-parse_delta(<<1:1,L0:7,1:1,L1:7,1:1,L2:7,0:1,L3:7,Data/binary>>,
-	    State,Status,Running,Params) ->
-    Len = (L0 bsl 21) bor (L1 bsl 14) bor (L2 bsl 7) bor L3,
-    {{ok,Len}, {State,Data,Status,Running,Params}};
-parse_delta([_L0,_L1,_L2,_L3|Cs],State,Status,Running,Params) ->
-    {{error,bad_delta}, {State,Cs,Status,Running,Params}}.
-
-
-events_encode([E|Es]) ->
-    events_encode(E, Es, <<>>);
-events_encode([]) ->
-    <<>>.
-
-events_encode({note_off,Chan,Note,Velocity},Es,Data) ->
-    events_encode_(note_offs,Chan,Es,
-		  <<Data/binary,?MIDI_EVENT_NOTEOFF:4,Chan:4,
-		    0:1,Note:7,0:1,Velocity:7>>);
-events_encode({note_on,Chan,Note,Velocity},Es,Data) ->
-    events_encode_(note_on,Chan,Es,
-		  <<Data/binary,
-		    ?MIDI_EVENT_NOTEON:4,Chan:4,
-		    0:1,Note:7,0:1,Velocity:7>>);
-events_encode({after_touch,Chan,B,C},Es,Data) ->
-    events_encode_(after_touch,Chan,Es,
-		  <<Data/binary,
-		    ?MIDI_EVENT_AFTERTOUCH:4,Chan:4,
-		    0:1,B:7,0:1,C:7>>);
-events_encode({control_change,Chan,Control,Param},Es,Data) ->
-    events_encode_(control_change,Chan,Es,
-		   <<Data/binary,
-		     ?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
-		     0:1,(control_encode(Control)):7, 0:1,Param:7>>);
-events_encode(E, [E1|Es], Data) ->
-    events_encode(E1,Es,<<(event_encode(E))/binary,Data/binary>>);
-events_encode(E, [], Data) ->
-    <<(event_encode(E))/binary,Data/binary>>.
-    
-events_encode_(Status,Chan,[{Status,Chan,B,C}|Es],Data) ->
-    events_encode_(Status,Chan,Es,<<Data/binary,0:1,B:7,0:1,C:7>>);
-%% Well some tools do not support this! Maybe enable with option?
-%% special case note_off = note_on vel=0
-%% events_encode_(note_on,Chan,[{note_off,Chan,B,_C}|Es],Data) ->
-%%    events_encode_(note_on,Chan,Es,<<Data/binary,0:1,B:7,0:1,0:7>>);
-events_encode_(_Status,_Chan,[E|Es],Data) ->
-    events_encode(E, Es, Data);
-events_encode_(_Status,_Chan,[],Data) ->
-    Data.
-
-event_encode({note_off,Chan,Note,Velocity}) ->
-    <<?MIDI_EVENT_NOTEOFF:4,Chan:4, 0:1, Note:7, 0:1, Velocity:7>>;
-event_encode({note_on,Chan,Note,Velocity}) ->
-    <<?MIDI_EVENT_NOTEON:4,Chan:4, 0:1, Note:7, 0:1, Velocity:7>>;
-event_encode({after_touch,Chan, B, C}) ->
-    <<?MIDI_EVENT_AFTERTOUCH:4,Chan:4, 0:1,B:7,0:1,C:7>>;
-event_encode({control_change,Chan,Control,Param}) ->
-    <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
-      0:1,(control_encode(Control)):7, 0:1,Param:7>>;
-event_encode({pitch_bend,Chan,Bend}) ->
-    Bend1 = Bend + 16#2000,
-    <<?MIDI_EVENT_PITCHBEND:4,Chan:4,
-      0:1,Bend1:7, 0:1,(Bend1 bsr 7):7>>;
-event_encode({program_change,Chan,Prog}) ->     
-    <<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4,0:1,Prog:7>>;
-event_encode({pressure,Chan,Pressure}) ->     
-    <<?MIDI_EVENT_PRESSURE:4,Chan:4,0:1,Pressure:7>>;
-event_encode({sysex,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 0:4, Bin/binary>>;
-event_encode({sys1,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 1:4, Bin/binary>>;
-event_encode({song_position_pointer,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 2:4, Bin/binary>>;
-event_encode({song_select,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 3:4, Bin/binary>>;
-event_encode({sys4,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 4:4, Bin/binary>>;
-event_encode({sys5,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 5:4, Bin/binary>>;
-event_encode({tune_request,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 6:4, Bin/binary>>;
-event_encode({eox,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 7:4, Bin/binary>>;
-event_encode({timing_clock,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 8:4, Bin/binary>>;
-event_encode({sys9,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 9:4, Bin/binary>>;
-event_encode({start,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 10:4, Bin/binary>>;
-event_encode({continue,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 11:4, Bin/binary>>;
-event_encode({stop,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 12:4, Bin/binary>>;
-event_encode({sys13,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 13:4, Bin/binary>>;
-event_encode({active_sensing,Params}) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4, 14:4, Bin/binary>>;
-event_encode({meta,text,Text}) ->
-    meta_encode(?MIDI_META_TEXT,Text);
-event_encode({meta,copyright,Text}) ->
-    meta_encode(?MIDI_META_COPYRIGHT,Text);
-event_encode({meta,track_name,Text}) ->
-    meta_encode(?MIDI_META_TRACKNAME,Text);
-event_encode({meta,instrument,Text}) ->
-    meta_encode(?MIDI_META_INSTRUMENT,Text);
-event_encode({meta,lyric,Text}) ->
-    meta_encode(?MIDI_META_LYRIC,Text);
-event_encode({meta,marker,Text}) ->
-    meta_encode(?MIDI_META_MARKER,Text);
-event_encode({meta,cue_point,Text}) ->
-    meta_encode(?MIDI_META_CUE_POINT,Text);
-event_encode({meta,program_name,Text}) ->
-    meta_encode(?MIDI_META_PROGRAM_NAME,Text);
-event_encode({meta,device_name,Text}) ->
-    meta_encode(?MIDI_META_DEVICE_NAME,Text);
-event_encode({meta,midi_channel,Channel}) ->
-    meta_encode(?MIDI_META_MIDI_CHANNEL, [Channel band 16#7f]);
-event_encode({meta,midi_port,Port}) ->
-    meta_encode(?MIDI_META_MIDI_PORT, [Port band 16#7f]);
-event_encode({meta,end_of_track,_}) ->
-    meta_encode(?MIDI_META_END_OF_TRACK, []);
-event_encode({meta,tempo,Tempo}) ->
-    <<T2,T1,T0>> = <<(trunc(Tempo)):24>>,
-    meta_encode(?MIDI_META_TEMPO, [T2,T1,T0]);
-event_encode({meta, smpte_offset, [HR,MN,SE,FR,FF]}) ->
-    meta_encode(?MIDI_META_SMPTE_OFFSET, [HR,MN,SE,FR,FF]);
-event_encode({meta, time_signature, [NN,DD,CC,BB]}) ->
-    DDi = trunc(math:log2(DD)),
-    meta_encode(?MIDI_META_TIME_SIGNATURE, [NN,DDi,CC,BB]);
-event_encode({meta, key_signature, [SF,MI]}) ->
-    meta_encode(?MIDI_META_KEY_SIGNATURE, [SF,MI]);
-event_encode({meta, proprietary, Params}) ->
-    meta_encode(?MIDI_META_PROPRIETARY, Params);
-event_encode({meta, Meta, Params}) when is_integer(Meta) ->
-    meta_encode(Meta,Params).
+event_encode(eox, Run, Acc) ->
+    sys_event_encode(7,[],Run,Acc);
+event_encode(#meta{type=Type,params=Data}, Run, Acc) ->
+    case Type of
+	text -> meta_encode(?MIDI_META_TEXT,Data,Run,Acc);
+	copyright ->
+	    meta_encode(?MIDI_META_COPYRIGHT,Data,Run,Acc);
+	track_name ->
+	    meta_encode(?MIDI_META_TRACKNAME,Data,Run,Acc);
+	instrument ->
+	    meta_encode(?MIDI_META_INSTRUMENT,Data,Run,Acc);
+	lyric ->
+	    meta_encode(?MIDI_META_LYRIC,Data,Run,Acc);
+	marker ->
+	    meta_encode(?MIDI_META_MARKER,Data,Run,Acc);
+	cue_point ->
+	    meta_encode(?MIDI_META_CUE_POINT,Data,Run,Acc);
+	program_name ->
+	    meta_encode(?MIDI_META_PROGRAM_NAME,Data,Run,Acc);
+	device_name ->
+	    meta_encode(?MIDI_META_DEVICE_NAME,Data,Run,Acc);
+	midi_channel ->
+	    Channel = Data band 16#7f,
+	    meta_encode(?MIDI_META_MIDI_CHANNEL,[Channel],Run,Acc);
+	midi_port ->
+	    Port = Data band 16#7f,
+	    meta_encode(?MIDI_META_MIDI_PORT,[Port],Run,Acc);
+	end_of_track ->
+	    meta_encode(?MIDI_META_END_OF_TRACK,[],Run,Acc);
+	tempo ->
+	    <<T2,T1,T0>> = <<(trunc(Data)):24>>,
+	    %% fixme: encode tempo 7 bit?
+	    meta_encode(?MIDI_META_TEMPO,[T2,T1,T0],Run,Acc);
+	smpte_offset ->
+	    <<HR,MN,SE,FR,FF>> = Data,
+	    meta_encode(?MIDI_META_SMPTE_OFFSET,[HR,MN,SE,FR,FF],Run,Acc);
+	time_signature ->
+	    [NN,DD,CC,BB] = Data,
+	    DDi = trunc(math:log2(DD)),
+	    meta_encode(?MIDI_META_TIME_SIGNATURE,[NN,DDi,CC,BB],Run,Acc);
+	key_signature ->
+	    [SF,MI] = Data,
+	    meta_encode(?MIDI_META_KEY_SIGNATURE,[SF,MI],Run,Acc);
+	proprietary ->
+	    meta_encode(?MIDI_META_PROPRIETARY,Data,Run,Acc);
+	_ when is_integer(Type) ->
+	    meta_encode(Type,Data,Run,Acc)
+    end.
 
 meta_encode(Meta, Params) ->
+    {_, [List]} = meta_encode(Meta, Params, <<>>, []),
+    iolist_to_binary(List).
+
+meta_encode(Meta, Params, Run, Acc) ->
     LCode = length_encode(length(Params)),
-    %% Bin = << <<0:1,P:7>> || P <- Params >>,
     Bin = << <<P>> || P <- Params >>,
-    <<?MIDI_EVENT_SYS:4,15:4,0:1,Meta:7,LCode/binary,Bin/binary>>.
+    event_encode_(<<?MIDI_EVENT_SYS:4,15:4>>, 
+		  Run,
+		  <<0:1,Meta:7,LCode/binary,Bin/binary>>,
+		  Acc).
+
+sys_event_encode(Sys, Params, Run, Acc) ->
+    Bin = << <<0:1,P:7>> || P <- Params >>,
+    event_encode_(<<?MIDI_EVENT_SYS:4,Sys:4>>,
+		  Run,
+		  Bin,
+		  Acc).
+
+event_encode_(Status,Status,Params,Acc) ->
+    {Status, [Params | Acc]};
+event_encode_(Status,_Run,Params,Acc) ->
+    {Status, [[Status,Params] | Acc]}.
+
 
 length_encode(L) when L >= 0, L =< 16#0fffffff ->
     length_encode_(L).
@@ -332,24 +405,26 @@ length_decode(<<1:1,L0:7,1:1,L1:7,1:1,L2:7,0:1,L3:7>>) ->
 event_decode(Status,Params=[B,C]) ->
     case Status bsr 4 of
 	?MIDI_EVENT_NOTEOFF ->
-	    {note_off,Status band 16#0F, B, C};
+	    #note_off{chan=Status band 16#0F, note=B, velocity=C};
 	?MIDI_EVENT_NOTEON ->
-	    {note_on,Status band 16#0F, B, C};
+	    #note_on{chan=Status band 16#0F, note=B, velocity=C};
 	?MIDI_EVENT_AFTERTOUCH ->
-	    {after_touch,Status band 16#0F, B, C};
+	    #after_touch{chan=Status band 16#0F, note=B, value=C};
 	?MIDI_EVENT_CONTROLCHANGE ->
-	    {control_change,Status band 16#0F, control_decode(B), C};
+	    #control_change{chan=Status band 16#0F, control=control_decode(B),
+			    param=C};
 	?MIDI_EVENT_PITCHBEND ->
-	    {pitch_bend,Status band 16#0F, ((C bsl 7) bor B) - 16#2000};
+	    #pitch_bend{chan=Status band 16#0F, 
+			bend=((C bsl 7) bor B) - 16#2000};
 	?MIDI_EVENT_SYS ->
 	    sys_decode(Status band 16#0F, Params)
     end;
 event_decode(Status,Params=[B]) ->
     case Status bsr 4 of
 	?MIDI_EVENT_PROGRAMCHANGE ->
-	    {program_change,Status band 16#0F, B};
+	    #program_change{chan=Status band 16#0F, prog=B};
 	?MIDI_EVENT_PRESSURE ->
-	    {pressure,Status band 16#0F, B};
+	    #pressure{chan=Status band 16#0F, pressure=B};
 	?MIDI_EVENT_SYS ->
 	    sys_decode(Status band 16#0F, Params)
     end;
@@ -361,61 +436,68 @@ event_decode(Status,Params) ->
 
 sys_decode(Sys, Params) ->
     case Sys of
-	0 -> {sysex,Params};
-	1 -> {sys1,Params};
-	2 -> {song_position_pointer,Params};
-	3 -> {song_select,Params};
-	4 -> {sys4,Params};
-	5 -> {sys5,Params};
-	6 -> {tune_request,Params};
-	7 -> {eox,Params};
-	8 -> {timing_clock,Params};
-	9 -> {sys9,Params};
-	10 -> {start,Params};
-	11 -> {continue,Params};
-	12 -> {stop,Params};
-	13 -> {sys13,Params};
-	14 -> {active_sensing,Params};
-	15 -> meta_decode(Params)
+	%% non-real time (ex have some real time as well...)
+	0 -> #sys{type=ex,params=Params};
+	1 -> #sys{type=sys1,params=Params};
+	2 -> #sys{type=song_position_pointer,params=Params};
+	3 -> #sys{type=song_select,params=Params};
+	4 -> #sys{type=sys4,params=Params};
+	5 -> #sys{type=sys5,params=Params};
+	6 -> #sys{type=tune_request,params=Params};
+	7 -> #sys{type=eox,params=Params};
+	%% real time
+	8 -> #sys{type=timing_clock,params=Params};
+	9 -> #sys{type=sys9,params=Params};
+	10 -> #sys{type=start,params=Params};
+	11 -> #sys{type=continue,params=Params};
+	12 -> #sys{type=stop,params=Params};
+	13 -> #sys{type=sys13,params=Params};
+	14 -> #sys{type=active_sensing,params=Params};
+	15 -> 
+	    if Params =:= undefined; Params =:= [] ->
+		    #sys{type=system_reset};
+	       true ->
+		    meta_decode(Params)
+	    end
     end.
 
 meta_decode([Meta|Params]) ->
     case Meta of
-	?MIDI_META_TEXT      -> {meta,text,Params};  %% text
-	?MIDI_META_COPYRIGHT -> {meta,copyright,Params};  %% text
-	?MIDI_META_TRACKNAME -> {meta,track_name,Params};   %% text
-	?MIDI_META_INSTRUMENT -> {meta,instrument,Params};  %% text
-	?MIDI_META_LYRIC -> {meta,lyric,Params};  %% text
-	?MIDI_META_MARKER -> {meta,marker,Params};  %% text
-	?MIDI_META_CUE_POINT -> {meta,cue_point,Params};  %% text
-	?MIDI_META_PROGRAM_NAME -> {meta,program_name,Params};  %% text
-	?MIDI_META_DEVICE_NAME -> {meta,device_name,Params};  %% text
-	?MIDI_META_MIDI_CHANNEL -> {meta,midi_channel,Params}; %% uint8
-	?MIDI_META_MIDI_PORT -> {meta,midi_port,Params};  %% uint8
-	?MIDI_META_END_OF_TRACK -> {meta,end_of_track,[]}; %% -
+	?MIDI_META_TEXT      -> #meta{type=text,params=Params};  %% text
+	?MIDI_META_COPYRIGHT -> #meta{type=copyright,params=Params};  %% text
+	?MIDI_META_TRACKNAME -> #meta{type=track_name,params=Params};   %% text
+	?MIDI_META_INSTRUMENT -> #meta{type=instrument,params=Params};  %% text
+	?MIDI_META_LYRIC -> #meta{type=lyric,params=Params};  %% text
+	?MIDI_META_MARKER -> #meta{type=marker,params=Params};  %% text
+	?MIDI_META_CUE_POINT -> #meta{type=cue_point,params=Params};  %% text
+	?MIDI_META_PROGRAM_NAME -> #meta{type=program_name,params=Params};  %% text
+	?MIDI_META_DEVICE_NAME -> #meta{type=device_name,params=Params};  %% text
+	?MIDI_META_MIDI_CHANNEL -> #meta{type=midi_channel,params=Params}; %% uint8
+	?MIDI_META_MIDI_PORT -> #meta{type=midi_port,params=Params};  %% uint8
+	?MIDI_META_END_OF_TRACK -> #meta{type=end_of_track,params=[]}; %% -
 	?MIDI_META_TEMPO -> %% uint24/big
 	    case Params of
-		[T2,T1,T0] -> {meta,tempo,(T2 bsl 16)+(T1 bsl 8)+T0}
+		[T2,T1,T0] -> #meta{type=tempo,params=(T2 bsl 16)+(T1 bsl 8)+T0}
 	    end;
 	?MIDI_META_SMPTE_OFFSET -> %% <<HR:8,MN:8,SE:8,FR:8,FF:8>>
 	    case Params of
 		[HR,MN,SE,FR,FF] ->
-		    {meta, smpte_offset, [HR,MN,SE,FR,FF]}
+		    #meta{type= smpte_offset,params=[HR,MN,SE,FR,FF]}
 	    end;
 	?MIDI_META_TIME_SIGNATURE -> %% <<NN:8,DD:8,CC:8,BB:8>>
 	    case Params of
 		[NN,DD,CC,BB] ->
-		    {meta,time_signature, [NN,(1 bsl DD),CC,BB]}
+		    #meta{type=time_signature,params=[NN,(1 bsl DD),CC,BB]}
 	    end;
 	?MIDI_META_KEY_SIGNATURE -> %% <<SF:8,MI:8>>
 	    case Params of
 		[SF,MI] -> 
-		    {meta, key_signature, [SF,MI]}
+		    #meta{type= key_signature,params=[SF,MI]}
 	    end;
 	?MIDI_META_PROPRIETARY ->
-	    {meta, proprietary, Params};
+	    #meta{type= proprietary,params=Params};
 	_ ->
-	    {meta, Meta, Params}
+	    #meta{type=Meta,params=Params}
     end.
 
 -define(ITEM(A,B), (A) => (B), (B) => (A)).
@@ -723,3 +805,6 @@ note_encode([$A,I]) when I>=$0, I=<$9 -> 12*(I-$0+1)+9;
 note_encode([$A,$#,I]) when I>=$0, I=<$9 -> 12*(I-$0+1)+10;
 note_encode([$B,I]) when I>=$0, I=<$9 -> 12*(I-$0+1)+11.
 
+clamp(X, Min, _Max) when X < Min -> Min;
+clamp(X, _Min, Max) when X > Max -> Max;
+clamp(X, _, _) -> X.

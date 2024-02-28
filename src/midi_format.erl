@@ -3,7 +3,7 @@
 %%
 -module(midi_format).
 
--compile(export_all).
+-export([file/1, file/3]).
 
 -include("../include/midi.hrl").
 
@@ -15,7 +15,7 @@ file(File) ->
 
 file(File,Fd,BPM) ->
     case midi_file:load(File) of
-	{ok,{1,_NumTracks,Division},Tracks} ->
+	{ok,{_Format,_NumTracks,Division},Tracks} ->
 	    MPQN = ?USEC_PER_MINUTE/BPM,
 	    PPQN = if Division >= 0 -> Division; true -> 1.0 end,
 	    _USPP =
@@ -58,24 +58,23 @@ next_(Fd,[?EOT|Trs],[_T|Ts],Trs1,Ts1,_Fld,Tick) ->
     next_(Fd,Trs,Ts,[?EOT|Trs1],[?HUGE|Ts1],[],Tick);
 next_(Fd,[[E|Es]|Trs],[T|Ts],Trs1,Ts1,Fld,Tick) when T =< Tick ->
     E1 = case E of
-	     {meta,tempo,V} ->
+	     #meta{type=tempo,params=V} ->
 		 BPM = trunc(?USEC_PER_MINUTE / V),
 		 {tempo,BPM};
-	     {note_on,Chan,Note,0} ->
+	     #note_on{chan=Chan,note=Note,velocity=0} ->
 		 {off,Chan,Note};
-	     {note_off,Chan,Note,_Vel} ->
+	     #note_off{chan=Chan,note=Note} ->
 		 {off,Chan,Note};
-	     {note_on,Chan,Note,Vel} ->
+	     #note_on{chan=Chan,note=Note,velocity=Vel} ->
 		 {on,Chan,Note,Vel};
-	     {meta,end_of_track,_} ->
-		 eof;
+	     #meta{type=end_of_track} ->
+		 eot;
 	     _ -> E
 	 end,
-    case E1 of
-	eot ->
+    if E1 =:= eot ->
 	    format_fld(Fd, [eot|Fld]),
 	    next_(Fd,Trs,Ts,[?EOT|Trs1],[?HUGE|Ts1],[],Tick);
-	_ ->
+       true ->
 	    case Es of
 		[D|Es1] ->
 		    T1 = T+D,
@@ -91,7 +90,7 @@ next_(Fd,[Es|Trs],[T|Ts],Trs1,Ts1,Fld,Tick) ->
     format_fld(Fd, Fld),
     next_(Fd,Trs,Ts,[Es|Trs1],[T|Ts1],[],Tick);
 next_(Fd,[],[],Trs1,Ts1,_Fld,_Tick) ->
-    io:format("\n"),
+    io:format(Fd, "\n", []),
     format_(Fd,lists:reverse(Trs1),lists:reverse(Ts1)).
 
 format_fld(Fd, Fs) ->

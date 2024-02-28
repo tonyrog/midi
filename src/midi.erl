@@ -17,7 +17,7 @@
 -export([bank/3, bank2/3]).
 -export([volume/3, volume2/3]).
 -export([control7/4, control14/5]).
--export([nrp/4]).
+-export([nrpn/4]).
 
 -export([expression/3, expression2/3]).
 
@@ -36,12 +36,21 @@
 -export([tparam_set_tempo/2]).
 -export([tparam_set_time_signature/2]).
 
+-export([device_inquiry/1, device_inquiry/2]).
+-export([request_device_inquiry/1, request_device_inquiry/2]).
+-export([read_sys/1]).
 %% nifs
--export([open/2, close_/1, read_/1, write_/2]).
+-export([open/2, close_/1, read_/1, write_/2, select_/2]).
 -export([backend/0, synth/0]).
 
 %% util
 -export([play_file/1]).
+
+-type handle() :: reference().
+-type mode() :: read | write | read_write.
+-type chan() :: 0..15.
+-type note() :: 0..127.
+-type velocity() :: 0..127.
 
 -define(DEFAULT_MIDI_SYNTH, midi_fluid).
 -define(DEFAULT_MIDI_BACKEND, midi_alsa).
@@ -88,28 +97,75 @@ open(_DeviceName, _OptionList) ->
 % close midi device
 close(Name) when is_atom(Name) ->
     close_(midi_reg:whereis(Name));
-close(Fd) ->
-    close_(Fd).
+close(Handle) ->
+    close_(Handle).
 
-close_(_Fd) ->
+close_(_Handle) ->
     ?nif_stub().
 
-write(Name,Data) when is_atom(Name) ->
-    write_(midi_reg:whereis(Name), Data);
-write(Fd,Data) ->
-    write_(Fd,Data).
+%% write "blocking" data
+-spec write(Handle::atom()|handle(), Data::iolist()) ->
+	  {ok, Written::integer()} | {error, term()}.
 
-write_(_Fd, _Data) ->
+write(Name,Data) when is_atom(Name) ->
+    write(midi_reg:whereis(Name),iolist_to_binary(Data), 0);
+write(Handle,Data) ->
+    write(Handle,iolist_to_binary(Data),0).
+
+-spec write(Handle::atom()|handle(), Data::binary(), SoFar::integer()) ->
+	  {ok, Written::integer()} | {error, term()}.
+
+write(Handle, Bin, SoFar) ->
+    Size = byte_size(Bin),
+    case write_(Handle, Bin) of    
+	{ok, Written} ->
+	    if Written =:= Size ->
+		    {ok, Written+SoFar};
+	       Written =:= 0 ->
+		    {ok, SoFar};
+	       true ->
+		    <<_:Written/binary, Bin1/binary>> = Bin,
+		    write(Handle, Bin1, SoFar+Written)
+	    end;
+	{error, eagain} ->
+	    io:format("eagain\n"),
+	    ok = select_(Handle, write),
+	    receive
+		{select,Handle,undefined,_Ready} ->
+		    write(Handle, Bin, SoFar)
+	    end;
+	{error, Error} ->
+	    {error, Error}
+    end.
+
+-spec write_(Handle::handle(), Data::iolist()) ->
+	  {ok, Written::integer()} | {error, eagain} | {error, term()}.
+
+write_(_Handle, _Data) ->
+    ?nif_stub().
+
+-spec select_(handle(), mode()) -> ok | {error, term()}.
+
+select_(_Handle, _Mode) ->
     ?nif_stub().
 
 read(Name) when is_atom(Name) ->
     read_(midi_reg:whereis(Name));
-read(Fd) ->
-    read_(Fd).
+read(Handle) ->
+    read_(Handle).
 
-read_(_Fd) ->
+-spec read_(Handle::handle()) ->
+	  {ok,NumEvents::integer()} |
+	  {ok,Data::binary()} |
+	  {error, eagain} |
+	  {error, term()}.
+
+read_(_Handle) ->
     ?nif_stub().
 
+-spec note_on(Synth::handle(), Chan::chan(), Note::note(),
+	      Velocity::velocity()) ->
+	  {ok,Written::integer()} | {error, Reason::term()}.
 note_on(Synth, Chan, Note, Velocity) ->
     write(Synth, <<?MIDI_EVENT_NOTEON:4,Chan:4,0:1,Note:7,0:1,Velocity:7>>).
 
@@ -209,20 +265,27 @@ control7(Synth, Chan, Control, Arg) ->
 
 control14(Synth, Chan, Control, ControlFine, Arg) ->
     write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
-		   0:1,Control:7, 0:1, (Arg bsr 7):7>>),
-    write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
-		   0:1,ControlFine:7, 0:1, Arg:7>>).
+		   0:1, Control:7, 
+		   0:1, (Arg bsr 7):7,
+		   0:1, ControlFine:7, 
+		   0:1, Arg:7
+		 >>).
 
-nrp(Synth, Chan, Param, Value) ->
+%% like control14 * 2
+nrpn(Synth, Chan, Param, Value) ->
     write(Synth, <<?MIDI_EVENT_CONTROLCHANGE:4,Chan:4,
-		   ?MIDI_CTRL_NON_REGISTERED_PARAMETER,
-		   ((Param bsr 7) band 16#7f),
-		   ?MIDI_CTRL_NON_REGISTERED_PARAMETER_FINE,
-		   (Param band 16#7f),
-		   ?MIDI_CTRL_DATA_ENTRY,
-		   ((Value bsr 7) band 16#7f),
-		   ?MIDI_CTRL_DATA_ENTRY_FINE,
-		   (Value band 16#7) >>).
+		   0:1, ?MIDI_CTRL_NON_REGISTERED_PARAMETER:7, 
+		   0:1, (Param bsr 7):7,
+		   0:1, ?MIDI_CTRL_NON_REGISTERED_PARAMETER_FINE:7, 
+		   0:1, Param:7,
+
+		   0:1, ?MIDI_CTRL_DATA_ENTRY:7, 
+		   0:1, (Value bsr 7):7,
+		   0:1, ?MIDI_CTRL_DATA_ENTRY_FINE:7, 
+		   0:1, Value:7
+		 >>).
+
+
 
 program_change(Synth, Chan, Prog) ->
     write(Synth, <<?MIDI_EVENT_PROGRAMCHANGE:4,Chan:4,0:1,Prog:7>>).
@@ -267,7 +330,8 @@ proxy(InputDevice, OutputDevice) ->
 
 proxy_in(In,Out) ->
     case read(In) of
-	select ->
+	{error,eagain} ->
+	    ok = select_(In, read),
 	    receive
 		{select,In,undefined,ready_input} ->
 		    proxy_in(In,Out)
@@ -294,52 +358,53 @@ proxy_out(In, Out) ->
 	    
 io_prog(DeviceName) ->
     input_prog(DeviceName, 
-	       fun(_Fd,Event) ->
+	       fun(_Handle,Event) ->
 		       io:format("~p\n", [Event])
 	       end).
 
 input_prog(DeviceName, CallBack) ->
     case open(DeviceName,[event,list,running]) of
-	{ok,Fd} ->
-	    input_loop(Fd, CallBack, midi_codec:init([]));
+	{ok,Handle} ->
+	    input_loop(Handle, CallBack, midi_codec:init());
 	Error ->
 	    Error
     end.
 
-input_loop(Fd, CallBack, State) ->
-    case read(Fd) of
+input_loop(Handle, CallBack, State) ->
+    case read(Handle) of
 	{ok,Chars} when is_list(Chars) ->
 	    case midi_codec:scan(Chars, State) of
 		{more, State1} ->
-		    input_loop(Fd, CallBack, State1);
+		    input_loop(Handle, CallBack, State1);
 		{{Status,Params},State1} ->
 		    Event = midi_codec:event(Status, Params),
-		    CallBack(Fd, Event),
-		    input_loop(Fd, CallBack, State1)
+		    CallBack(Handle, Event),
+		    input_loop(Handle, CallBack, State1)
 	    end;
 	{ok,_N} when is_integer(_N) -> %% got N events
-	    message_loop(Fd, CallBack, State);
-	select ->
+	    message_loop(Handle, CallBack, State);
+	{error,eagain} ->
+	    ok = select_(Handle, read),
 	    receive
-		{select,Fd,undefined,ready_input} ->
-		    input_loop(Fd,CallBack,State)
+		{select,Handle,undefined,ready_input} ->
+		    input_loop(Handle,CallBack,State)
 	    end;	    
 	Error ->
 	    Error
     end.
 
-message_loop(Fd, CallBack, State) ->
+message_loop(Handle, CallBack, State) ->
     receive
-	{midi,Fd,Event} -> %% driver handle packet
+	{midi,Handle,Event} -> %% driver handle packet
 	    io:format("midi event ~p\n", [Event]),
-	    CallBack(Fd, Event),
-	    message_loop(Fd, CallBack, State);
-	{midi,Fd,Event,_Delta} -> %% driver handle packet
+	    CallBack(Handle, Event),
+	    message_loop(Handle, CallBack, State);
+	{midi,Handle,Event,_Delta} -> %% driver handle packet
 	    io:format("midi event ~p\n", [Event]),
-	    CallBack(Fd, Event),
-	    message_loop(Fd, CallBack, State)
+	    CallBack(Handle, Event),
+	    message_loop(Handle, CallBack, State)
     after 0 ->
-	    input_loop(Fd, CallBack, State)
+	    input_loop(Handle, CallBack, State)
     end.
 
 synth() ->
@@ -474,3 +539,104 @@ find_input_port(Port,[D=#{output:=OUT}|Ds]) ->
     end;
 find_input_port(_Port,[]) ->
     false.
+
+device_inquiry(Synth) ->
+    device_inquiry(Synth, 16#7f).
+device_inquiry(Synth, DID) ->
+    request_device_inquiry(Synth, DID),
+    case read_sys(Synth) of
+	{ok, <<0:1, ?SYSEX_NON_REALTIME:7, %% non-realtime message
+	       0:1, DeviceID:7,   %% 1 bytes!
+	       0:1, ?SYSEX_DEVICE_INQUIRY:7,
+	       0:1, ?DEVICE_INQUIRY_REPLY,
+	       0:1, 00:7,    %% Manufacturers id code (0001-7F7F)
+	       0:1, MH:7,
+	       0:1, ML:7,	
+	       0:1, FamilyLs:7, %% Family (1)
+	       0:1, FamilyMs:7, %% Family (1)
+	       0:1, MemberLs:7, %% Product (0)
+	       0:1, MemberMs:7, %% Product (0)
+	       Vsn/binary       %% Version (vary 3-4 bytes!!!)
+	     >>} ->
+	    Manufacturer = (MH bsl 7) bor ML,
+	    Version = list_to_tuple(binary_to_list(Vsn)),
+	    Family = (FamilyMs bsl 7) bor FamilyLs,	    
+	    Member = (MemberMs bsl 7) bor MemberLs,
+	    {ok, #{id=>DeviceID,
+		   manufacturer => Manufacturer,
+		   family=>Family, 
+		   member=>Member, 
+		   version=>Version }};
+	{ok, <<0:1, ?SYSEX_NON_REALTIME:7,    %% non-realtime message
+	       0:1, ID:7,       %% 1 bytes!
+	       0:1, ?SYSEX_DEVICE_INQUIRY:7,
+	       0:1, ?DEVICE_INQUIRY_REPLY:7,
+	       0:1, MM:7,       %% Manufacturers id code (01-7F)
+	       0:1, FamilyLs:7, %% Family (1)
+	       0:1, FamilyMs:7, %% Family (1)
+	       0:1, MemberLs:7, %% Product (0)
+	       0:1, MemberMs:7, %% Product (0)
+	       Vsn/binary       %% Version (vary 3-4 bytes!!!)
+	     >>} ->
+	    Version = list_to_tuple(binary_to_list(Vsn)),
+	    Family = (FamilyMs bsl 7) bor FamilyLs,	    
+	    Member = (MemberMs bsl 7) bor MemberLs,
+	    {ok, #{id=>ID,
+		   manufacturer => MM,
+		   family=>Family, member=>Member, version=>Version }};
+	Error ->	    
+	    Error
+	end.
+
+%% sysex messages
+request_device_inquiry(Synth) ->
+    request_device_inquiry(Synth,all).
+request_device_inquiry(Synth, all) ->
+    request_device_inquiry_(Synth, 16#7f);
+request_device_inquiry(Synth, ID) when
+      is_integer(ID), ID >= 1, ID =< 16#7f ->
+    request_device_inquiry_(Synth, ID-1).
+
+request_device_inquiry_(Synth, DeviceID) ->
+    midi:write(Synth, <<?MIDI_EVENT_SYS:4, 0:4,
+			0:1, ?SYSEX_NON_REALTIME:7,    %% non-realtime
+			0:1, DeviceID:7, %% +1 = 1-127
+			0:1, ?SYSEX_DEVICE_INQUIRY:7,
+			0:1, ?DEVICE_INQUIRY_REQUEST:7,
+			?MIDI_EVENT_SYS:4, 7:4>>).
+
+%% read sys messages, drop other events (fixme?)
+read_sys(Synth) ->
+    read_sys(Synth, 3).
+
+read_sys(_Synth, 0) ->
+    {error, not_found};
+read_sys(Synth, I) ->
+    case midi:read(Synth) of
+	{error,eagain} ->
+	    midi:select_(Synth, read),
+	    receive
+		{select,Synth,undefined,ready_input} ->
+		    read_sys(Synth, I)
+	    after 3000 ->
+		    {error, timeout}
+	    end;
+	{ok,N} when is_integer(N) -> %% got N events
+	    read_sys_(Synth, I);
+	Error->
+	    Error
+    end.
+
+read_sys_(Synth,I) ->
+    receive
+	{midi,Synth,{sys,_N,<<>>}} ->
+	    read_sys_(Synth,I);
+	{midi,Synth,{sys,_N,Data}} ->
+	    {ok,Data};
+	{midi,Synth,Event} ->
+	    io:format("event ~p\n", [Event]),
+	    read_sys_(Synth,I)
+    after %% must wait and context switch!
+	100 ->
+	    read_sys(Synth,I-1)
+    end.

@@ -74,7 +74,7 @@ play_(Fd,Trs,Ts,Ticks,TimeUs,TParam) ->
     WaitUs = (Now - Ticks)*TParam#tparam.uspp,
     NextUs = trunc(TimeUs + WaitUs),
     End = wait_until(NextUs),
-    if End - NextUs > 500 -> io:format("td = ~w\n", [End-NextUs]);
+    if End - NextUs > 500 -> ok; %% io:format("td = ~w\n", [End-NextUs]);
        true -> ok
     end,
     next_(Fd,Trs,Ts,[],[],Now,Ticks,TimeUs,TParam).
@@ -110,7 +110,7 @@ init([[D|Es] | Trs], Trs1, Ts, TParam) when is_integer(D) ->
 init([], Trs, Ts, _TParam) -> 
     {lists:reverse(Trs), lists:reverse(Ts)}.
 
-exec(_Fd,{meta,Meta,Value},TParam) ->
+exec(_Fd,#meta{type=Meta,params=Value},TParam) ->
     case Meta of
 	end_of_track ->
 	    eot;
@@ -123,7 +123,7 @@ exec(_Fd,{meta,Meta,Value},TParam) ->
     end;    
 exec(Fd, E, TParam) ->
     Bytes = midi_codec:event_encode(E),
-    ok = midi:write(Fd, Bytes),
+    {ok,_} = midi:write(Fd, Bytes),
     {ok,TParam}.
 
 time_us() ->

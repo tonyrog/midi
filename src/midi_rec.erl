@@ -47,6 +47,9 @@ init(Opts) when is_map(Opts) ->
     ok = file:write(Fd, [0,midi_codec:event_encode(TempoChange)]),
     loop(IN, Status, USPP, Fd, PatchPos, true).
 
+loop(IN,{error,eagain},USPP,Fd,PatchPos,Flush) ->
+    ok = midi:select(IN,read),
+    loop(IN,select,USPP,Fd,PatchPos,Flush);
 loop(IN,Status,USPP,Fd,PatchPos,Flush) ->
     receive
 	{midi,IN,Event,Delta} ->
@@ -57,7 +60,7 @@ loop(IN,Status,USPP,Fd,PatchPos,Flush) ->
 		    output(Fd,EventList),
 		    Status1 = midi:read(IN),
 		    loop(IN,Status1,USPP,Fd,PatchPos,true);
-		select ->
+		{error,eagain} ->
 		    D = Delta div USPP,
 		    EventList = [{D,Event}],
 		    output(Fd,EventList),
@@ -121,7 +124,8 @@ flush_midi_in(IN) ->
 
 flush_midi_in_(IN) ->
     case midi:read(IN) of
-	select -> select;
+	{error,eagain} ->
+	    {error,eagain};
 	{ok,N} ->
 	    read_midi_in(N,IN,1,[]),
 	    flush_midi_in(IN)
