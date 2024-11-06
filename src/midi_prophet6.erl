@@ -13,7 +13,7 @@
 -export([transmit_seq/3]).
 -export([device_inquiry/1, device_inquiry/2]).
 -export([program_dump/3, request_program_dump/3]).
--export([program_edit_buffer_dump/1, request_program_program_edit_buffer/1]).
+-export([program_edit_buffer_dump/1, request_program_edit_buffer/1]).
 -export([global_parameter_dump/1, request_global_parameter_dump/1]).
 
 -export([name_to_nrpn/1, nrpn_to_name/1]).
@@ -22,19 +22,22 @@
 -export([nrpn/0]).
 -export([cc/0]).
 -export([dump/0]).
+-export([reverse_engineer_dump/1]).
 
--export([pack_ms_bit/1, unpack_ms_bit/1]).
 -export([unpack_global_params/1]).
--export([decode_program/2, decode_program/4]).
+-export([decode_program/1, decode_program/2, decode_program/4]).
 %% reverse engineer
 -export([get_edit_buffer/1, diff_edit_buffer/2, diff_bytes/4]).
 -export([dump_edit_buffer/1, decode_edit_buffer/1]).
--export([verify_nrpn_dump/4]).
+-export([verify_nrpn_dump/5]).
 
 -include("../include/midi.hrl").
 
+-define(is_handle(H), is_reference((H))). %% check if H is a midi handle
+
 -define(DSI_ID_HEADER, 1).
 
+-define(EVOLVER_ID,        16#20).
 -define(PROPHET_8_ID,      16#23).
 -define(PROPHET_6_ID,      16#2d).
 -define(PROPHET_REV2_ID,   16#2f).
@@ -43,13 +46,19 @@
 -define(PROPHET_PRO_3_ID,  16#31).
 -define(TRIGON_6_ID,       16#2D).  %% 0010 1101 (same as Prophet-6)???
 
--define(SYS_REQUEST_PROGRAM_DUMP, 5).
--define(SYS_REQUEST_PROGRAM_EDIT_BUFFER, 6).
--define(SYS_REQUEST_GLOBAL_PARAMETER_DUMP, 14).
+%% -define(EVOLVER_KEYBOARD_ID, 16#22). LS?
+
+-define(SYS_REQUEST_PROGRAM_TRANSMIT, 5).
+-define(SYS_REQUEST_PROGRAM_EDIT_BUFFER_TRANSMIT, 6).
+-define(SYS_REQUEST_GLOBAL_PARAMETER_TRANSMIT, 14).
 -define(SYS_REQUEST_GLOBAL_PROGRAM_DUMP, 5).
+%% response codes
+-define(PROGRAM_DATA,        2#000_0010).  %% 2
+-define(EDIT_BUFFER_DATA,    2#000_0011).  %% 3
+-define(MAIN_PARAMETER_DATA, 2#000_1111).  %% 15
 
 -define(PARM(Param, Name),
-	(Param) => {Name, {0,127,#{}}},
+	(Param) => {Name, {0,255,#{}}},
 	(Name) => Param).
 
 -define(PARM(Param, Name, Min, Max),
@@ -72,7 +81,7 @@ cc() ->
       ?PARM(6, data_entry_msb),
       ?PARM(7, midi_volume),
       ?PARM(8, sub_osc_level),
-      ?PARM(9, distortion_amount),
+      ?PARM(9, distortion_amt),
       
       ?PARM(38, data_entry_lsb),
       ?PARM(39, volume_lsb),
@@ -133,10 +142,10 @@ cc() ->
 nrpn() ->
     #{ 
        %% PROGRAM PARAMETER DATA
-       ?PARM(0, osc_1_freq, 0, 60),
-       ?PARM(1, osc_1_sync, 0, 1),
-       ?PARM(2, osc_1_level, 0, 127),
-       ?PARM(3, osc_1_shape, 0, 254),
+       ?PARM(0, osc_1_freq, 0, 60),   
+       ?PARM(1, osc_1_sync, 0, 1),    %% not saved?
+       ?PARM(2, osc_1_level, 0, 127), %% not saved?
+       ?PARM(3, osc_1_shape, 0, 254), %% not saved?
        ?PARM(4, osc_1_pulse_width, 0, 255),
        ?PARM(5, osc_2_freq, 0, 60),
        ?PARM(6, osc_2_freq_fine, 0, 254),
@@ -244,7 +253,7 @@ nrpn() ->
        ?PARM(1024, master_fine_tune, 0, 100),
        ?PARM(1025, master_coarse_tune, 0, 24),
        ?PARM(1026, midi_channel, 0, 16, #{all=>0}),
-       ?PARM(1027, midi_clock_mode, 0, 3, 
+       ?PARM(1027,midi_clock_mode, 0, 3, 
 	      #{off=>0, master=>1, slave=>2, slave_thru=>3}),
        ?PARM(1028, midi_clock_port, 0, 1, 
 	      #{midi=>0, usb=>1}),
@@ -267,140 +276,187 @@ nrpn() ->
        ?PARM(1041, velocity_reponse, 0, 3),
        ?PARM(1042, aftertouch_response, 0, 3),
        ?PARM(1043, mono_stereo, 0, 1, #{stereo=>0, mono=>1}),
-       ?PARM(1044, alt_tuning, 0, 16)
+       ?PARM(1044, alt_tuning, 0, 16),
+       ?PARM(1088, seq_play_stop, 0, 1, ?ONOFF)
      }.
 
-%% dump id's found usomg reverse engineering, 
+%% dump id's found using reverse engineering, 
 %% using get_edit_buffer and diff_edit_buffer
+%% dump Dump byte => nrpn name
 dump() ->
     #{
-      ?PARM(0,  osc_1_freq, 0,60),
-      ?PARM(1,  osc_2_freq,  0,60),
-      ?PARM(2,  osc_2_freq_fine, 0,254),
-      ?PARM(3,  osc_1_shape, 0,254),
-      ?PARM(4,  osc_2_shape, 0,254),
-      ?PARM(5,  osc_1_pulse_width, 0,255),
-      ?PARM(6,  osc_2_pulse_width, 0,255),
-      ?PARM(7,  osc_1_level, 0,127),
-      ?PARM(8,  osc_2_level, 0,127),
-      ?PARM(9,  osc_1_sub_level, 0,127), %% Osc 1 Sub Octave
-      ?PARM(10, noise_level, 0,127),
-      
-      ?PARM(11, osc_1_sync, 0,1),
-      ?PARM(12, osc_2_key_on_off, 0,1),
-      ?PARM(13, osc_2_low_freq, 0,1),
-      ?PARM(14, glide_rate, 0,127),
-      ?PARM(15, glide_mode, 0,3),     %%% glide + (dec/inc)
-      ?PARM(16, glide_on_off, 0,1),
-      ?PARM(17, pbend_range, 0, 24),
-
-      ?PARM(18, slope_amt, 0,127),
-      ?PARM(19, low_pass_freq, 0, 164),
-      ?PARM(20, low_pass_res, 0, 255),
-      ?PARM(21, low_pass_key_amt, 0, 2),
-      ?PARM(22, low_pass_vel_on, 0, 1),
-      ?PARM(23, high_pass_freq, 0,164),
-      ?PARM(24, high_pass_res, 0, 255),
-      ?PARM(25, high_pass_key_amt, 0, 2),
-      ?PARM(26, high_pass_vel_on, 0, 1),
-      ?PARM(27, voice_volume, 0, 127),  %% prgm vol
-      ?PARM(28, pan_spread, 0, 127),
-      ?PARM(29, low_pass_filter_env_amt, 0, 254),
-      ?PARM(30, high_pass_filter_env_amt, 0, 254),
-      ?PARM(31, vca_env_amt, 0, 127),
-
-      ?PARM(35, filter_env_attack, 0, 127),
-      ?PARM(36, vca_env_attack, 0, 127),
-      ?PARM(37, filter_env_decay,   0, 127),
-      ?PARM(38, vca_env_decay, 0, 127),
-
-      ?PARM(39, filter_env_sustain, 0, 127),
-      ?PARM(40, vca_env_sustain, 0, 127),
-      ?PARM(41, filter_env_release, 0, 127),
-      ?PARM(42, vca_env_release, 0, 127),
-      ?PARM(43, vca_env_vel_on, 0, 1),
-      ?PARM(44, fx_1_select, 0, 9),
-      ?PARM(45, fx_2_select, 0, 13),
-      ?PARM(46, fx_on_off, 0, 1),
-      ?PARM(48, fx_1_mix, 0, 127),
-      ?PARM(49, fx_2_mix, 0, 127),
-      ?PARM(50, fx_1_param_1, 0, 255),
-      ?PARM(51, fx_2_param_1, 0, 255),
-      ?PARM(52, fx_1_param_2, 0, 127),
-      ?PARM(53, fx_2_param_2, 0, 127),
-      ?PARM(55, fx_1_sync, 0, 1),
-      %% 56
-      %% 57?
-      ?PARM(58, distortion_amt, 0, 127),
-      %% LFO
-      ?PARM(59, lfo_freq, 0, 254),
-      ?PARM(62, lfo_shape, 0, 4),
-      ?PARM(63, lfo_initial_amt, 0, 255),
-      ?PARM(64, lfo_freq_1_dest_on_off, 0, 1),
-      ?PARM(65, lfo_freq_2_dest_on_off, 0, 1),
-      ?PARM(66, lfo_pw_1_2_dest_on_off, 0, 1),
-      ?PARM(67, lfo_low_pass_dest_on_off, 0, 1, ?ONOFF),
-      ?PARM(68, lfo_high_pass_dest_on_off, 0, 1, ?ONOFF),      
-      ?PARM(69, lfo_amp_dest_on_off, 0, 1),
-      
-      %% Aftertouch
-      ?PARM(70, pressure_amt, 0, 254),
-      ?PARM(71, pressure_freq_1_dest_on_off, 0, 1, ?ONOFF),
-      ?PARM(72, pressure_freq_2_dest_on_off, 0, 1, ?ONOFF),
-      ?PARM(73, pressure_low_pass_dest_on_off, 0, 1, ?ONOFF),
-      ?PARM(74, pressure_high_pass_dest_on_off, 0, 1, ?ONOFF),
-      ?PARM(75, pressure_vca_dest_on_off, 0, 1, ?ONOFF),
-      ?PARM(76, pressure_lfo_amt_dest_on_off, 0, 1, ?ONOFF),      
-
-      ?PARM(77, polymod_filter_env_amt, 0, 254),
-      ?PARM(78, polymod_osc_2_amt, 0, 254),      
-      ?PARM(79, polymod_freq_1_dest_on_off, 0,1,?ONOFF),
-      ?PARM(80, polymod_shape_1_dest_on_off, 0,1,?ONOFF),
-      ?PARM(81, polymod_pw_1_dest_on_off, 0,1,?ONOFF),
-      ?PARM(82, polymod_low_pass_dest_on_off, 0,1,?ONOFF),
-      ?PARM(83, polymod_high_pass_dest_on_off,0,1,?ONOFF),
-      ?PARM(84, unison_on_off,0,1,?ONOFF),
-      ?PARM(85, unison_mode, 0,6),  %% push unison + (dec/inc)
-      ?PARM(86, key_mode, 0, 5),
-
-      ?PARM(87, bpm, 30, 250),
-      ?PARM(89, arp_mode, 0, 4),
-      ?PARM(90, arp_range, 0, 2),
-      ?PARM(91, arp_on_off, 0,1,?ONOFF),
-      ?PARM(92, arp_tim_sig, 0, 9), %%% ???
-
-      ?PARM(95, seq_mode, 0, 1),
-      ?PARM(96, seq_play_mode, 0, 1)
-      
+      0 => osc_1_freq,
+      1 => osc_2_freq,
+      2 => osc_2_freq_fine,
+      3 => osc_1_shape,
+      4 => osc_2_shape,
+      5 => osc_1_pulse_width,
+      6 => osc_2_pulse_width,
+      7 => osc_1_level,
+      8 => osc_2_level,
+      9 => osc_1_sub_level,
+      10 => noise_level,
+      11 => osc_1_sync,
+      12 => osc_2_key_on_off,
+      13 => osc_2_low_freq,
+      14 => glide_rate,
+      15 => glide_mode,
+      16 => glide_on_off,
+      17 => pbend_range,
+      18 => slop,
+      19 => low_pass_freq,
+      20 => low_pass_res,
+      21 => low_pass_key_amt,
+      22 => low_pass_vel_on,
+      23 => high_pass_freq,
+      24 => high_pass_res,
+      25 => high_pass_key_amt,
+      26 => high_pass_vel_on,
+      27 => voice_volume,
+      28 => pan_spread,
+      29 => low_pass_env_amt,
+      30 => high_pass_env_amt,
+      31 => vca_env_amt,
+      %% 32 =>
+      %% 33 =>
+      %% 34 =>
+      35 => filter_env_attack,
+      36 => vca_env_attack,
+      37 => filter_env_decay,
+      38 => vca_env_decay,
+      39 => filter_env_sustain,
+      40 => vca_env_sustain,
+      41 => filter_env_release,
+      42 => vca_env_release,
+      43 => vca_env_vel_on_off,
+      44 => fx_1_select,
+      45 => fx_2_select,
+      46 => fx_on_off,
+      %% 47 =>
+      48 => fx_1_mix,
+      49 => fx_2_mix,
+      50 => fx_1_param_1,
+      51 => fx_2_param_1,
+      52 => fx_1_param_2,
+      53 => fx_2_param_2,
+      54 => fx_1_sync,
+      55 => fx_2_sync,
+      %% 56 =>
+      %% 57 =>
+      58 => distortion_amt,
+      59 => lfo_freq,
+      61 => lfo_sync,
+      62 => lfo_shape,
+      63 => lfo_initial_amt,
+      64 => lfo_freq_1_dest_on_off,
+      65 => lfo_freq_2_dest_on_off,
+      66 => lfo_pw_1_2_dest_on_off,
+      67 => lfo_low_pass_dest_on_off,
+      68 => lfo_high_pass_dest_on_off,
+      69 => lfo_amp_dest_on_off,
+      70 => pressure_amt,
+      71 => pressure_freq_1_dest_on_off,
+      72 => pressure_freq_2_dest_on_off,
+      73 => pressure_low_pass_dest_on_off,
+      74 => pressure_high_pass_dest_on_off,
+      75 => pressure_vca_dest_on_off,
+      76 => pressure_lfo_amt_dest_on_off,
+      77 => polymod_filter_env_amt,
+      78 => polymod_osc_2_amt,
+      79 => polymod_freq_1_dest_on_off,
+      80 => polymod_shape_1_dest_on_off,
+      81 => polymod_pw_1_dest_on_off,
+      82 => polymod_low_pass_dest_on_off,
+      83 => polymod_high_pass_dest_on_off,
+      84 => unison_on_off,
+      85 => unison_mode,
+      86 => key_mode,
+      87 => bpm,
+      89 => arp_mode,
+      90 => arp_range,
+      91 => arp_on_off,
+      92 => arp_tim_sig,
+      93 => seq_on_off,
+      %% 94 =>
+      95 => seq_mode,
+      96 => seq_play_mode,
+      %% 97 =>
+      %% 98 =>
+      %% 99 =>
+      %% 100 =>
+      %% 101 =>
+      %% 102 =>
+      %% 103 =>
+      %% 104 =>
+      %% 105 =>
+      %% 106 =>
+      107 => name,
+      126 => name_last,
+      128 => seq_note1,
+      192 => seq_vel1,
+      256 => seq_note2,
+      320 => seq_vel2,
+      384 => seq_note3,
+      448 => seq_vel3,
+      512 => seq_note4,
+      576 => seq_vel4,
+      640 => seq_note5,
+      704 => seq_vel5,
+      768 => seq_note6,
+      832 => seq_vel6
      }.
 
-%% verify a nrmn parameter againt the dump,
-verify_nrpn_dump(S, Bin0, Param, Value) ->
-    {ok,_} = transmit_param(S, Param, Value),
-    case diff_edit_buffer(S, Bin0) of
-	[] -> %% set same value as in dump or non existing parameter
-	    not_found_in_dump;
-	[{DumpNo, OldValue, Value}] ->
-	    io:format("dump index ~p\n", [DumpNo]),
-	    io:format("new value = ~p\n", [Value]),
-	    io:format("old value = ~p\n", [OldValue]),
-	    DumpValue = maps:get(DumpNo, dump(), undefined),
-	    {ok,_} = transmit_param(S, Param, OldValue),  %% restore
-	    case DumpValue of
-		undefined -> %% not found in dump
-		    {error, {Param, not_found_in_dump}};
-		{Name, {Min, Max, _}} when Value >= Min, Value =< Max ->
-		    if Param =:= DumpNo ->
-			    {ok, DumpNo};
-		       Param =:= Name ->
-			    {ok, DumpNo};
-		       true ->
-			    {error, {name_mismatch, Name}}
-		    end
+%% reverse enginner dump
+reverse_engineer_dump(Device) ->
+    {ok, Handle} = midi:open_device(Device),
+    midi:flush(Handle),
+    {ok, Dump} = get_edit_buffer(Handle),
+    io:format("Dump = ~p~n", [Dump]),
+    NrpnMap = nrpn(),
+    List = reverse_engineer_dump_(Handle, Dump, NrpnMap, 0, 1088,  []),
+    midi:close(Handle),
+    List.
+
+
+reverse_engineer_dump_(Handle, Dump, NrpnMap, Param, ParamMax, Acc) when Param =< ParamMax ->
+    case maps:get(Param, NrpnMap, undefined) of
+	undefined -> 
+	    reverse_engineer_dump_(Handle, Dump, NrpnMap, Param+1, ParamMax, Acc);	    
+	{Name, {Min, Max, _}} ->
+	    io:format("Param ~p => ~s~n", [Param, Name]),
+	    case verify_nrpn_dump(Handle, Dump, Name, Param, Min) of
+		{-1, Dump1} -> %% maybe min value was used, try max
+		    case verify_nrpn_dump(Handle, Dump1, Name, Param, Max) of
+			{-1, Dump2} ->
+			    io:format("Parameter ~p not found in dump~n", [Name]),
+			    reverse_engineer_dump_(Handle, Dump2, NrpnMap, Param+1, ParamMax, Acc);
+			{DumpNo, Dump2} ->
+			    io:format("  ~s => ~w.\n", [Name, DumpNo]),
+			    reverse_engineer_dump_(Handle, Dump2, NrpnMap, Param+1, ParamMax, 
+						   [{DumpNo,Name,Param}|Acc])
+		    end;
+		{DumpNo, Bin1} ->
+		    io:format("  ~s => ~w.\n", [Name, DumpNo]),
+		    reverse_engineer_dump_(Handle, Bin1, NrpnMap, Param+1, ParamMax, 
+					   [{DumpNo,Name,Param}|Acc])
 	    end
+    end;
+reverse_engineer_dump_(_Handle, _Dump, _NrpnMap, Param, ParamMax, Acc) when Param > ParamMax ->
+    lists:sort(Acc).
+
+
+%% verify a nrmn parameter againt the dump,
+verify_nrpn_dump(Handle, Dump, Name, Param, Value) ->
+    io:format("nrpn ~s[~p] => ~p~n", [Name, Param, Value]),
+    {ok,_} = transmit_param(Handle, Param, Value),
+    case diff_edit_buffer(Handle, Dump) of
+	{[],Dump1} -> %% set same value as in dump or non existing parameter
+	    {-1, Dump1};
+	{[{DumpNo, _OldValue, Value}],Dump1} -> %% assume one byte change!
+	    %% restore (not really needed)
+	    %% {ok,_} = midi:nrpn(Handle, 0, Param, OldValue),
+	    {DumpNo, Dump1}
     end.
-    
-      
 
 %% require -config prophet6.config
 open() ->
@@ -413,64 +469,64 @@ open() ->
 open(Device) ->
     midi:open(Device,[event,binary,running]).
 
-close(Synth) ->
-    midi:close(Synth).
+close(Handle) ->
+    midi:close(Handle).
 
-transmit_param(Synth, Param, Value) ->
-    transmit_param(Synth, 0, Param, Value).
+transmit_param(Handle, Param, Value) ->
+    transmit_param(Handle, 0, Param, Value).
 
-transmit_param(Synth, Chan, ParamName, Value) when is_atom(ParamName) ->
+transmit_param(Handle, Chan, ParamName, Value) when is_atom(ParamName) ->
     Param = maps:get(ParamName, nrpn()),
     {_, Range} = maps:get(Param, nrpn()),
     Value1 = check_range(Range, Value),
-    midi:nrpn(Synth, Chan, Param, Value1);
-transmit_param(Synth, Chan, Param, Value) when
+    midi:nrpn(Handle, Chan, Param, Value1);
+transmit_param(Handle, Chan, Param, Value) when
       is_integer(Param), Param >= 0, Param =< 16#3fff ->
     {_ParamName, Range} = maps:get(Param, nrpn()),
     Value1 = check_range(Range, Value),
-    midi:nrpn(Synth, Chan, Param, Value1).
+    midi:nrpn(Handle, Chan, Param, Value1).
 
-transmit_name(Synth, Chan, Name) when is_list(Name) ->
+transmit_name(Handle, Chan, Name) when is_list(Name) ->
     Param = name_to_nrpn(name),
-    transmit_name_(Synth, Chan, Param, Name).
+    transmit_name_(Handle, Chan, Param, Name).
 
-transmit_name_(Synth, Chan, Param, [C|Cs]) ->
-    transmit_param(Synth, Chan, Param, C),
-    transmit_name_(Synth, Chan, Param+1, Cs);
-transmit_name_(_Synth, _Chan, _Param, []) ->
+transmit_name_(Handle, Chan, Param, [C|Cs]) ->
+    transmit_param(Handle, Chan, Param, C),
+    transmit_name_(Handle, Chan, Param+1, Cs);
+transmit_name_(_Handle, _Chan, _Param, []) ->
     ok.
 
 -type seqnote() :: #{ voice => 1..6, note => 12..108, vel => 0..127 }.
 -type seqdata() :: [seqnote()].
 
--spec transmit_seq(Synth::reference(), Chan::0..16, Seq::[seqdata()]) ->
+-spec transmit_seq(Handle::reference(), Chan::0..16, Seq::[seqdata()]) ->
 	  ok.
 
-transmit_seq(Synth, Chan, Seq) ->
-    transmit_seq_(Synth, Chan, 0, Seq).
+transmit_seq(Handle, Chan, Seq) ->
+    transmit_seq_(Handle, Chan, 0, Seq).
 
-transmit_seq_(Synth, Chan, I, [Data|Seq]) ->
-    transmit_seq_data(Synth, Chan, I, Data),
-    transmit_seq_(Synth, Chan, I+1, Seq);
-transmit_seq_(_Synth, _Chan, _I, []) ->
+transmit_seq_(Handle, Chan, I, [Data|Seq]) ->
+    transmit_seq_data(Handle, Chan, I, Data),
+    transmit_seq_(Handle, Chan, I+1, Seq);
+transmit_seq_(_Handle, _Chan, _I, []) ->
     ok.
 
-transmit_seq_data(Synth, Chan, I, [D|Data]) ->
+transmit_seq_data(Handle, Chan, I, [D|Data]) ->
     J = maps:get(voice, D),
     case maps:get(note, D, undefined) of
 	undefined -> ok;
 	Note ->
 	    Note0 = seq_note(J),
-	    transmit_param(Synth, Chan, Note0+I, Note)		
+	    transmit_param(Handle, Chan, Note0+I, Note)		
     end,
     case maps:get(vel, D, undefined) of
 	undefined -> ok;
 	Vel -> 
 	    Vel0 = seq_vel(J),
-	    transmit_param(Synth, Chan, Vel0+I, Vel)
+	    transmit_param(Handle, Chan, Vel0+I, Vel)
     end,
-    transmit_seq_data(Synth, Chan, I+1, Data);
-transmit_seq_data(_Synth, _Chan, _I, []) ->
+    transmit_seq_data(Handle, Chan, I+1, Data);
+transmit_seq_data(_Handle, _Chan, _I, []) ->
     ok.
 
 %% get note and vel parameter base index from note number
@@ -478,11 +534,11 @@ seq_note(I) when I>=1, I=<6  -> 256+(I-1)*128.
 seq_vel(I) when I>=1, I=<6 -> 320+(I-1)*128.
 
 
-device_inquiry(Synth) ->
-    midi:device_inquiry(Synth).
+device_inquiry(Handle) ->
+    midi:device_inquiry(Handle).
 
-device_inquiry(Synth, Chan) ->
-    case midi:device_inquiry(Synth, Chan) of
+device_inquiry(Handle, Chan) ->
+    case midi:device_inquiry(Handle, Chan) of
 	{ok, Info=#{ id := 1, family := Family }} ->
 	    Name = case Family band 16#7f of
 		       ?PROPHET_8_ID    -> prophet_8;
@@ -497,17 +553,28 @@ device_inquiry(Synth, Chan) ->
 	    Error
 	end.
 
-program_dump(Synth, Bank, Program) ->
-    request_program_dump(Synth, Bank, Program),
-    case midi:read_sys(Synth) of
+program_dump(DeviceName, Bank, Program) when 
+      is_list(DeviceName),
+      is_integer(Bank), Bank >= 0, Bank =< 9,
+      is_integer(Program), Program >= 0, Program =< 99 ->
+    midi:with_device(DeviceName,
+		     fun(Handle) ->
+			     program_dump(Handle, Bank, Program) 
+		     end);
+program_dump(Handle, Bank, Program)
+    when ?is_handle(Handle),
+	  is_integer(Bank), Bank >= 0, Bank =< 9,
+	 is_integer(Program), Program >= 0, Program =< 99 ->
+    request_program_dump(Handle, Bank, Program),
+    case midi:read_sys(Handle) of
 	{ok, <<0:1, ?DSI_ID_HEADER:7,
 	       0:1, ?PROPHET_6_ID:7,
-	       0:1, 16#02:7, %% Program DATA
+	       0:1, ?PROGRAM_DATA:7, %% Program DATA
 	       0:1, Bank:7,
 	       0:1, Program:7,
 	       Bin/binary>>} ->
 	    %% io:format("|Bin|=~w, Bin=~p\n", [byte_size(Bin), Bin]),
-	    Bin1 = unpack_ms_bit(Bin),
+	    Bin1 = midi_sysex:unpack_ms_bit(Bin),
 	    Data = decode_program(Bin1, dump()),
 	    {ok,#{bank=>Bank,program=>Program,data=>Data}};
 	{ok, Bin} ->
@@ -517,33 +584,33 @@ program_dump(Synth, Bank, Program) ->
 	    Error
     end.
 
-get_edit_buffer(Synth) ->
-    request_program_program_edit_buffer(Synth),    
-    case midi:read_sys(Synth) of
+get_edit_buffer(Handle) ->
+    request_program_edit_buffer(Handle),    
+    case midi:read_sys(Handle) of
 	{ok, <<0:1, ?DSI_ID_HEADER:7,
 	       0:1, ?PROPHET_6_ID:7,
-	       0:1, 16#03:7, %% Edit Buffer Data
+	       0:1, ?EDIT_BUFFER_DATA:7, %% Edit Buffer Data
 	       Bin/binary>>} ->
 	    %% io:format("|Bin|=~w, Bin=~p\n", [byte_size(Bin), Bin]),
-	    {ok, unpack_ms_bit(Bin)};
+	    {ok, midi_sysex:unpack_ms_bit(Bin)};
 	{ok, Bin} ->
-	    {erro, {unexpeced, Bin}};
+	    {error, {unexpeced, Bin}};
 	Error ->
 	    Error
 	end.
 
-decode_edit_buffer(Synth) ->
-    {ok, Bin} = get_edit_buffer(Synth),
+decode_edit_buffer(Handle) ->
+    {ok, Bin} = get_edit_buffer(Handle),
     decode_program(Bin, dump()).
 
-dump_edit_buffer(Synth) ->
-    {ok, Bin} = get_edit_buffer(Synth),
+dump_edit_buffer(Handle) ->
+    {ok, Bin} = get_edit_buffer(Handle),
     [ io:format("~s : ~p\n", [binary:encode_hex(Bin16), Bin16]) || 
 	<<Bin16:16/binary>> <= Bin ].
 
-diff_edit_buffer(Synth, Bin0) ->
-    {ok, Bin1} = get_edit_buffer(Synth),    
-    diff_bytes(0, Bin0, Bin1, []).
+diff_edit_buffer(Handle, Bin0) ->
+    {ok, Bin1} = get_edit_buffer(Handle),
+    {diff_bytes(0, Bin0, Bin1, []), Bin1}.
 
 diff_bytes(Addr, <<B0,Bin0/binary>>, <<B1,Bin1/binary>>, Diff) ->
     if B0 =:= B1 ->
@@ -554,16 +621,19 @@ diff_bytes(Addr, <<B0,Bin0/binary>>, <<B1,Bin1/binary>>, Diff) ->
 diff_bytes(_Addr, _Bin0, _Bin1, Diff) ->
     lists:reverse(Diff).
 
-
-program_edit_buffer_dump(Synth) ->
-    request_program_program_edit_buffer(Synth),
-    case midi:read_sys(Synth) of
+program_edit_buffer_dump(DeviceName) when is_list(DeviceName) ->
+    midi:with_device(DeviceName,
+		     fun(Handle) -> program_edit_buffer_dump(Handle) 
+		     end);
+program_edit_buffer_dump(Handle) when ?is_handle(Handle) ->
+    request_program_edit_buffer(Handle),
+    case midi:read_sys(Handle) of
 	{ok, <<0:1, ?DSI_ID_HEADER:7,
 	       0:1, ?PROPHET_6_ID:7,
-	       0:1, 16#03:7, %% Edit Buffer Data
+	       0:1, ?EDIT_BUFFER_DATA:7, %% Edit Buffer Data
 	       Bin/binary>>} ->
 	    %% io:format("|Bin|=~w, Bin=~p\n", [byte_size(Bin), Bin]),
-	    Bin1 = unpack_ms_bit(Bin),
+	    Bin1 = midi_sysex:unpack_ms_bit(Bin),
 	    Data = decode_program(Bin1, dump()),
 	    {ok,#{data=>Data}};
 	{ok, Bin} ->
@@ -573,32 +643,33 @@ program_edit_buffer_dump(Synth) ->
 	    Error
 	end.
 
-request_program_dump(Synth, Bank, Program) when
+request_program_dump(Handle, Bank, Program) when
+      ?is_handle(Handle),
       is_integer(Bank), Bank >= 0, Bank =< 9,
       is_integer(Program), Program >= 0, Program =< 99 ->
-    midi:write(Synth,
+    midi:write(Handle,
 	       <<?MIDI_EVENT_SYS:4, 0:4,
 		 0:1, ?DSI_ID_HEADER:7,
 		 0:1, ?PROPHET_6_ID:7,
-		 0:1, ?SYS_REQUEST_PROGRAM_DUMP:7,
-		 0:1, Bank:7, %% Bank 0-9 ? 0-4?
+		 0:1, ?SYS_REQUEST_PROGRAM_TRANSMIT:7,
+		 0:1, Bank:7, %% Bank 0-9
 		 0:1, Program:7, %%  Program 0-99
 		 ?MIDI_EVENT_SYS:4, 7:4>>).
 
-request_program_program_edit_buffer(Synth) ->
-    midi:write(Synth,
+request_program_edit_buffer(Handle) ->
+    midi:write(Handle,
 	       <<?MIDI_EVENT_SYS:4, 0:4,
 		 0:1, ?DSI_ID_HEADER:7,
 		 0:1, ?PROPHET_6_ID:7,
-		 0:1, ?SYS_REQUEST_PROGRAM_EDIT_BUFFER:7,
+		 0:1, ?SYS_REQUEST_PROGRAM_EDIT_BUFFER_TRANSMIT:7,
 		 ?MIDI_EVENT_SYS:4, 7:4>>).
 
-global_parameter_dump(Synth) ->
-    request_global_parameter_dump(Synth),    
-    case midi:read_sys(Synth) of
+global_parameter_dump(Handle) ->
+    request_global_parameter_dump(Handle),    
+    case midi:read_sys(Handle) of
 	{ok, <<0:1, ?DSI_ID_HEADER:7,
 	       0:1, ?PROPHET_6_ID:7,
-	       0:1, 15:7,
+	       0:1, ?MAIN_PARAMETER_DATA:7,
 	       Bin/binary>>} ->
 	    %% io:format("|Bin|=~w, Bin=~p\n", [byte_size(Bin), Bin]),
 	    Params = unpack_global_params(Bin),
@@ -610,107 +681,76 @@ global_parameter_dump(Synth) ->
 	    Error
     end.
 
-request_global_parameter_dump(Synth) ->
-    midi:write(Synth,
+request_global_parameter_dump(Handle) ->
+    midi:write(Handle,
 	       <<?MIDI_EVENT_SYS:4, 0:4,
 		 0:1, ?DSI_ID_HEADER:7,
 		 0:1, ?PROPHET_6_ID:7,
-		 0:1, ?SYS_REQUEST_GLOBAL_PARAMETER_DUMP:7,
+		 0:1, ?SYS_REQUEST_GLOBAL_PARAMETER_TRANSMIT:7,
 		 ?MIDI_EVENT_SYS:4, 7:4>>).
 
 
-%% byte_size(Bin) rem 7 = 0
-pack_ms_bit(<<A7:1, A:7, B7:1, B:7, C7:1, C:7, D7:1, D:7,
-	      E7:1, E:7, F7:1, F:7, G7:1, G:7, Data/binary>>) ->
-    Data1 = pack_ms_bit(Data),
-    <<0:1,G7:1,F7:1,E7:1,D7:1,C7:1,B7:1,A7:1,
-      A,B,C,D,E,F,G,Data1/binary>>;
-pack_ms_bit(<<>>) ->
-    <<>>.
-
-unpack_ms_bit(<<0:1,G7:1,F7:1,E7:1,D7:1,C7:1,B7:1,A7:1,
-		0:1,A:7,0:1,B:7,0:1,C:7,0:1,D:7,0:1,E:7,0:1,F:7,0:1,G:7, 
-		Data/binary>>) ->
-    Data1 = unpack_ms_bit(Data),
-    <<A7:1, A:7, B7:1, B:7, C7:1, C:7, D7:1, D:7,
-      E7:1, E:7, F7:1, F:7, G7:1, G:7, Data1/binary>>;
-unpack_ms_bit(<<0:1,G7:1,F7:1,E7:1,D7:1,C7:1,B7:1,A7:1,Bin/binary>>) ->
-    unpack_bytes([A7,B7,C7,D7,E7,F7,G7], Bin);
-unpack_ms_bit(<<>>) ->
-    <<>>.
-
-unpack_bytes([A7|Bs], <<0:1,A:7,Bin/binary>>) ->
-    Bin1 = unpack_bytes(Bs, Bin),
-    <<A7:1,A:7, Bin1/binary>>;
-unpack_bytes(_, <<>>) ->
-    <<>>.
-
 %% unpack global parameters
 unpack_global_params(Data) ->
-    unpack_global_params(1024, Data, []).
+    [try nrpn_to_name(Param) of
+	 {Name,_Range} ->
+	     {Name, Value}
+     catch
+	 error:_ ->
+	     {Param, Value}
+     end || {Param, Value} <- midi_sys:unpack_nibbles(1024, Data)].
 
-unpack_global_params(Param, <<Value,Data/binary>>, Acc) ->
-    try nrpn_to_name(Param) of
-	{ParamName,_Range} -> %% fixme: use range? warnings?
-	    io:format("~s: ~w\n", [ParamName, Value]),
-	    unpack_global_params(Param+1, Data, [{ParamName, Value}|Acc])
-    catch
-	error:_ ->
-	    unpack_global_params(Param+1, Data, [{Param, Value}|Acc])
-    end;
-unpack_global_params(_, <<>>, Acc) ->
-    lists:reverse(Acc).    
+
+decode_program(Data) ->
+    decode_program(Data, dump()).
 
 decode_program(Data, Map) ->
     decode_program(0, Data, Map, []).
 
-decode_program(Param, <<C,Data/binary>>, Map, Acc) ->
-    try maps:get(Param, Map) of
-	{name, _Range} -> %% sequence of data (until last)
-	    decode_program_seq(Param+1,Param+20-1,name,Data,[C],Map,Acc);
-	{seq_note1, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_note1,Data,[C],Map,Acc);
-	{seq_vel1, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_vel1,Data,[C],Map,Acc);
-	{seq_note2, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_note2,Data,[C],Map,Acc);
-	{seq_vel2, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_vel2,Data,[C],Map,Acc);
-	{seq_note3, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_note3,Data,[C],Map,Acc);
-	{seq_vel3, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_vel3,Data,[C],Map,Acc);
-	{seq_note4, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_node4,Data,[C],Map,Acc);
-	{seq_vel4, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_vel4,Data,[C],Map,Acc);
-	{seq_note5, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_note5,Data,[C],Map,Acc);
-	{seq_vel5, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_val5,Data,[C],Map,Acc);
-	{seq_note6, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_note6,Data,[C],Map,Acc);
-	{seq_vel6, _Range} ->
-	    decode_program_seq(Param+1,Param+64-1,seq_vel6,Data,[C],Map,Acc);
-	{ParamName,_Range} ->
-	    io:format("~s: ~w\n", [ParamName, C]),
-	    decode_program(Param+1, Data, Map, [{ParamName,C}|Acc])
-    catch
-	error:_ ->
-	    decode_program(Param+1, Data, Map, [{Param,C}|Acc])
+decode_program(Ix, Data0 = <<Value,Data/binary>>, Map, Acc) ->
+    case maps:get(Ix, Map, undefined) of
+	name -> %% sequence of data (until last)
+	    decode_program_seq(Ix,20,name,Data0,Map,Acc);
+	seq_note1 ->
+	    decode_program_seq(Ix,64,seq_note1,Data0,Map,Acc);
+	seq_vel1 ->
+	    decode_program_seq(Ix,64,seq_vel1,Data0,Map,Acc);
+	seq_note2 ->
+	    decode_program_seq(Ix,64,seq_note2,Data0,Map,Acc);
+	seq_vel2 ->
+	    decode_program_seq(Ix,64,seq_vel2,Data0,Map,Acc);
+	seq_note3 ->
+	    decode_program_seq(Ix,64,seq_note3,Data0,Map,Acc);
+	seq_vel3 ->
+	    decode_program_seq(Ix,64,seq_vel3,Data0,Map,Acc);
+	seq_note4 ->
+	    decode_program_seq(Ix,64,seq_node4,Data0,Map,Acc);
+	seq_vel4 ->
+	    decode_program_seq(Ix,64,seq_vel4,Data0,Map,Acc);
+	seq_note5 ->
+	    decode_program_seq(Ix,64,seq_note5,Data0,Map,Acc);
+	seq_vel5 ->
+	    decode_program_seq(Ix,64,seq_val5,Data0,Map,Acc);
+	seq_note6 ->
+	    decode_program_seq(Ix,64,seq_note6,Data0,Map,Acc);
+	seq_vel6 ->
+	    decode_program_seq(Ix,64,seq_vel6,Data0,Map,Acc);
+	undefined ->
+	    io:format("no mapping for byte ~p\n", [Ix]),
+	    decode_program(Ix+1, Data, Map, Acc);
+	Nrpn ->
+	    io:format("  ~s[~w]: ~w\n", [Nrpn, Ix, Value]),
+	    decode_program(Ix+1, Data, Map, [{Nrpn,Value}|Acc])
     end;
 decode_program(_, <<>>, _Map, Acc) ->
     lists:reverse(Acc).
 
 %% collect bytes for param sequnces
-decode_program_seq(Param, Param, ParamName, <<C,Data/binary>>, Cs, Map, Acc) ->
-    List = lists:reverse([C|Cs]),
-    io:format("~s: ~p\n", [ParamName, List]),
-    decode_program(Param+1, Data, Map, [{ParamName,List}|Acc]);
-decode_program_seq(Param,ParamLast,ParamName,<<C,Data/binary>>,Cs,Map, Acc)
-  when Param < ParamLast ->
-    decode_program_seq(Param+1,ParamLast,ParamName,Data,[C|Cs],Map, Acc).
-
+decode_program_seq(Ix, Num, Nrpn, Data, Map, Acc) ->
+    <<Value:Num/binary, Data1/binary>> = Data,
+    Seq = binary_to_list(Value),
+    io:format("  ~s[~w]: ~p\n", [Nrpn, Ix, Seq]),
+    decode_program(Ix+Num, Data1, Map, [{Nrpn,Seq}|Acc]).
 
 name_to_nrpn(ParamName) when is_atom(ParamName) ->
     maps:get(ParamName, nrpn());

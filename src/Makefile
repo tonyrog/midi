@@ -20,6 +20,9 @@ APP_TARGET=../ebin/$(APP).app
 
 all: $(APP_TARGET) $(ALL_OBJECTS)
 
+debug: ERLC_FLAGS += -Ddebug -DDEBUG
+debug: all
+
 clean:
 	rm -f $(ALL_OBJECTS) *.core .*.d
 

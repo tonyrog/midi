@@ -152,11 +152,6 @@ parse_connecting_to([{'[',_},{atom,_,real},{':',_},
 		     {integer,_,_Hw},{']',_}], Acc) ->
     Acc.
 
-
-
-
-
-
 add_node(undefined,Acc,_DevMidi) -> Acc;
 add_node(Node,Acc,DevMidi) -> 
     %% find real device name if any

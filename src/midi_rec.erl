@@ -48,11 +48,12 @@ init(Opts) when is_map(Opts) ->
     loop(IN, Status, USPP, Fd, PatchPos, true).
 
 loop(IN,{error,eagain},USPP,Fd,PatchPos,Flush) ->
-    ok = midi:select(IN,read),
+    ok = midi:select_(IN,read),
     loop(IN,select,USPP,Fd,PatchPos,Flush);
 loop(IN,Status,USPP,Fd,PatchPos,Flush) ->
     receive
 	{midi,IN,Event,Delta} ->
+	    io:format("Got event ~p\n", [Event]),
 	    case Status of
 		{ok,N} ->
 		    D = Delta div USPP,
@@ -60,7 +61,7 @@ loop(IN,Status,USPP,Fd,PatchPos,Flush) ->
 		    output(Fd,EventList),
 		    Status1 = midi:read(IN),
 		    loop(IN,Status1,USPP,Fd,PatchPos,true);
-		{error,eagain} ->
+		select ->
 		    D = Delta div USPP,
 		    EventList = [{D,Event}],
 		    output(Fd,EventList),

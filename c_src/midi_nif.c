@@ -158,6 +158,8 @@ DECL_ATOM(timestamp);
 DECL_ATOM(read);
 DECL_ATOM(write);
 DECL_ATOM(read_write);
+DECL_ATOM(cancel_read);
+DECL_ATOM(cancel_write);
 
 // posix errors
 DECL_ATOM(eagain);
@@ -204,9 +206,6 @@ static void midi_handle_clear(midi_handle_t* dp)
 }
 static int midi_handle_is_valid(midi_handle_t hndl)
 {
-#ifdef ALSA
-    return (hndl.h != NULL);
-#endif
     return (hndl.fd >= 0);
 }
 
@@ -233,10 +232,12 @@ static int midi_close(midi_handle_t hndl)
     int r;
 #ifdef ALSA
     if (hndl.h != NULL) {
+	DEBUGF("midi_close: close alsa h=%lx", (intptr_t)hndl.h);
 	r = snd_rawmidi_close(hndl.h);
 	return r;
     }
 #endif
+    DEBUGF("midi_close: close fd=%d", hndl.fd);
     r = close(hndl.fd);
     return r;
 }
@@ -600,6 +601,10 @@ static ERL_NIF_TERM nif_open(ErlNifEnv* env, int argc,
 	    midi_close(out);
 	return make_error(env, e);
     }
+    DEBUGF("midi_nif:open: in=%lx,fd=%d, out=%lx,fd=%d",
+	   (intptr_t) in.h, in.fd,
+	   (intptr_t) out.h, out.fd);
+    
     dp->in = in;
     dp->out = out;
     dp->raw_mode = raw_mode;
@@ -618,25 +623,62 @@ static ERL_NIF_TERM nif_close(ErlNifEnv* env, int argc,
 			      const ERL_NIF_TERM argv[])
 {
     midi_dev_t* dp;
+    int closed = 0;
+    int fd;
     if (!enif_get_resource(env, argv[0], midi_r, (void**)&dp))
 	return enif_make_badarg(env);
-    DEBUGF("midi:close: close in=%lx, out=%lx",
-	   (intptr_t)dp->in.fd, (intptr_t)dp->out.fd);
+    DEBUGF("midi_nif:close: in=%lx,fd=%d, out=%lx,fd=%d",
+	   (intptr_t)dp->in.h, dp->in.fd,
+	   (intptr_t)dp->out.h, dp->out.fd);
     // DRAIN(dp->out) ?
     if (midi_handle_is_valid(dp->in)) {
+	int sel;
 	ErlNifPid pid;
 	enif_self(env, &pid);
-	enif_select(env, (ErlNifEvent)midi_event_handle(dp->in),
-		    ERL_NIF_SELECT_STOP,
-		    dp, &pid, ATOM(undefined));
+	fd = midi_event_handle(dp->in);
+	sel = enif_select(env, (ErlNifEvent) fd,
+			  ERL_NIF_SELECT_STOP, dp, &pid, ATOM(undefined));
+	DEBUGF("nif_close: enif_select IN sel = %d", sel);
+	if (sel < 0) {
+	    // error
+	}
+	else if (sel & ERL_NIF_SELECT_STOP_CALLED) {
+	    DEBUGF("midi_nif:close: %d select IN stop called", fd);
+	    closed |= 1;
+	}
+	else if (sel & ERL_NIF_SELECT_STOP_SCHEDULED) {
+	    DEBUGF("midi_nif:close: %d select IN stop scheduled", fd);
+	    closed |= 1;
+	}
     }
-    if (midi_handle_is_valid(dp->out) &&
-	(midi_event_handle(dp->in) != midi_event_handle(dp->out))) {
+    if (closed && (midi_event_handle(dp->in) == midi_event_handle(dp->out)))
+	closed |= 2;
+    else if (midi_handle_is_valid(dp->out)) {
+	int sel;
 	ErlNifPid pid;
 	enif_self(env, &pid);
-	enif_select(env, (ErlNifEvent)midi_event_handle(dp->out),
-		    ERL_NIF_SELECT_STOP,
-		    dp, &pid, ATOM(undefined));
+	fd = midi_event_handle(dp->out);
+	sel = enif_select(env, (ErlNifEvent)fd,
+			  ERL_NIF_SELECT_STOP,
+			  dp, &pid, ATOM(undefined));
+	DEBUGF("nif_close: enif_select OUT sel = %d", sel);
+	if (sel < 0) {
+	    // error
+	}	
+	else if (sel & ERL_NIF_SELECT_STOP_CALLED) {
+	    DEBUGF("midi_nif:close: %d select OUT stop called", fd);
+	    closed |= 2;
+	}
+	else if (sel & ERL_NIF_SELECT_STOP_SCHEDULED) {
+	    DEBUGF("midi_nif:close: %d select OUT stop scheduled", fd);
+	    closed |= 2;
+	}
+    }
+    switch(closed) {
+    case 0: midi_dev_close(dp); break;
+    case 3: midi_handle_clear(&dp->in); midi_handle_clear(&dp->out); break;
+    case 1: midi_close(dp->out); midi_handle_clear(&dp->out); break;
+    case 2: midi_close(dp->in); midi_handle_clear(&dp->in); break;
     }
     return ATOM(ok);
 }
@@ -717,16 +759,40 @@ static ERL_NIF_TERM nif_select(ErlNifEnv* env, int argc,
 	mode = ERL_NIF_SELECT_WRITE;
     else if (argv[1] == ATOM(read_write))
 	mode = (ERL_NIF_SELECT_WRITE|ERL_NIF_SELECT_READ);
+    else if (argv[1] == ATOM(cancel_read))
+	mode = ERL_NIF_SELECT_CANCEL|ERL_NIF_SELECT_READ;
+    else if (argv[1] == ATOM(cancel_write))
+	mode = ERL_NIF_SELECT_CANCEL|ERL_NIF_SELECT_WRITE;    
     else
 	return enif_make_badarg(env);	
 
     enif_self(env, &pid);
-    if (mode & ERL_NIF_SELECT_READ)
-	enif_select(env, dp->in.fd, ERL_NIF_SELECT_READ, dp,
-		    &pid, ATOM(undefined));
-    if (mode & ERL_NIF_SELECT_WRITE)
-	enif_select(env, dp->out.fd, ERL_NIF_SELECT_WRITE, dp,
-		    &pid, ATOM(undefined));
+    if (mode & ERL_NIF_SELECT_CANCEL) {
+	if (mode & ERL_NIF_SELECT_READ) {
+	    switch(enif_select(env, dp->in.fd,mode,dp,&pid,ATOM(undefined))) {
+	    case ERL_NIF_SELECT_READ_CANCELLED:
+		return ATOM(ok);
+	    default:
+		return ATOM(error);
+	    }
+	}
+	else {
+	    switch(enif_select(env, dp->out.fd,mode,dp,&pid,ATOM(undefined))) {
+	    case ERL_NIF_SELECT_WRITE_CANCELLED:
+		return ATOM(read);
+	    default:
+		return ATOM(error);
+	    }
+	}
+    }
+    else {
+	if (mode & ERL_NIF_SELECT_READ)
+	    enif_select(env, dp->in.fd, ERL_NIF_SELECT_READ, dp,
+			&pid, ATOM(undefined));
+	if (mode & ERL_NIF_SELECT_WRITE)
+	    enif_select(env, dp->out.fd, ERL_NIF_SELECT_WRITE, dp,
+			&pid, ATOM(undefined));
+    }
     return ATOM(ok);
 }
 
@@ -817,6 +883,8 @@ static int load_atoms(ErlNifEnv* env)
     LOAD_ATOM(read);
     LOAD_ATOM(write);
     LOAD_ATOM(read_write);
+    LOAD_ATOM(cancel_read);
+    LOAD_ATOM(cancel_write);    
     
     // posix errors
     LOAD_ATOM(eagain);

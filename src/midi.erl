@@ -23,13 +23,14 @@
 
 -export([start/0, start/1, stop/0]).
 -export([setup_synth/0, open_synth/0]).
+-export([with_device/2, open_device/1]).
 -export([devices/0]).
 -export([find_synth_device/2]).
 -export([find_device_by_port/2]).
 -export([find_device_by_name/2]).
 -export([find_synth_input_port/1]).
 
--export([io_prog/1, input_prog/2]).
+-export([io_prog/1]).
 -export([proxy/2]).
 -export([shared_input/1]).
 -export([tparam/2]).
@@ -38,7 +39,9 @@
 
 -export([device_inquiry/1, device_inquiry/2]).
 -export([request_device_inquiry/1, request_device_inquiry/2]).
--export([read_sys/1]).
+-export([read_sys/1, read_sys/2]).
+-export([recv_sys/1, recv_sys/2]).
+-export([flush/1]).
 %% nifs
 -export([open/2, close_/1, read_/1, write_/2, select_/2]).
 -export([backend/0, synth/0]).
@@ -54,6 +57,16 @@
 
 -define(DEFAULT_MIDI_SYNTH, midi_fluid).
 -define(DEFAULT_MIDI_BACKEND, midi_alsa).
+
+-define(is_handle(H), is_reference((H))).
+
+-ifdef(DEBUG).
+-define(dbg(F), io:format((F))).
+-define(dbg(F, A), io:format((F), A)).
+-else.
+-define(dbg(F), ok).
+-define(dbg(F, A), ok).
+-endif.
 
 -include("../include/midi.hrl").
 
@@ -97,7 +110,9 @@ open(_DeviceName, _OptionList) ->
 % close midi device
 close(Name) when is_atom(Name) ->
     close_(midi_reg:whereis(Name));
-close(Handle) ->
+close(Handle) when ?is_handle(Handle) ->
+    ?dbg("close\n"),
+    flush(Handle),
     close_(Handle).
 
 close_(_Handle) ->
@@ -128,7 +143,7 @@ write(Handle, Bin, SoFar) ->
 		    write(Handle, Bin1, SoFar+Written)
 	    end;
 	{error, eagain} ->
-	    io:format("eagain\n"),
+	    ?dbg("eagain\n"),
 	    ok = select_(Handle, write),
 	    receive
 		{select,Handle,undefined,_Ready} ->
@@ -189,14 +204,14 @@ volume2(Synth, Chan, Volume) ->
 
 pan(Synth, Chan, Pan) ->
     Value7 = signed7(Pan),
-    io:format("pan=~w\n", [Value7]),
+    ?dbg("pan=~w\n", [Value7]),
     control7(Synth, Chan, 
 	     ?MIDI_CTRL_PAN_POSITION, 
 	     Value7).
 
 pan2(Synth, Chan, Pan) ->
     Value14 = signed14(Pan),
-    io:format("pan=~w\n", [Value14]),
+    ?dbg("pan=~w\n", [Value14]),
     control14(Synth,Chan,
 	      ?MIDI_CTRL_PAN_POSITION,
 	      ?MIDI_CTRL_PAN_POSITION_FINE,
@@ -322,6 +337,35 @@ tparam_set_tempo(TParam=#tparam{ppqn=PPQN}, MPQN) ->
 tparam_set_time_signature(TParam, [NN,DD,CC,BB]) ->
     TParam#tparam{sig={NN,(1 bsl DD)},cc=CC,bb=BB}.
 
+with_device(DeviceName, Fun) ->
+    case open_device(DeviceName) of
+	{ok,Handle} ->
+	    try Fun(Handle) of
+		Result ->
+		    Result
+	    after
+		close(Handle)
+	    end;
+	Error ->
+	    Error
+    end.
+
+open_device(DeviceName = "/"++_) ->
+    open(DeviceName,[event,binary,running]);
+open_device(DeviceName = "hw:"++_) ->
+    open(DeviceName,[event,binary,running]);
+open_device(DeviceName = "hw"++_) ->
+    open(DeviceName,[event,binary,running]);
+open_device(DeviceName = "virtual"++_) ->
+    open(DeviceName,[event,binary,running]);
+open_device(Name) ->
+    case shared_input(Name) of
+	#{device := DeviceName } ->
+	    open_device(DeviceName);
+	Error = {error,_} ->
+	    Error
+    end.
+
 %% 
 proxy(InputDevice, OutputDevice) ->
     {ok,In}  = open(InputDevice,[event,list,running]),
@@ -345,67 +389,86 @@ proxy_in(In,Out) ->
 proxy_out(In, Out) ->
     receive
 	{midi,In,Event} -> %% driver handle packet
-	    io:format("midi event ~p\n", [Event]),
+	    ?dbg("midi event ~p\n", [Event]),
 	    write(Out, midi_codec:event_encode(Event)),
 	    proxy_out(In,Out);
 	{midi,In,Event,_Delta} -> %% driver handle packet
-	    io:format("midi event ~p\n", [Event]),
+	    ?dbg("midi event ~p\n", [Event]),
 	    write(Out, midi_codec:event_encode(Event)),
 	    proxy_out(In,Out)
     after 0 ->
 	    proxy_in(In,Out)
     end.
-	    
-io_prog(DeviceName) ->
-    input_prog(DeviceName, 
+
+io_prog(Synth) when is_reference(Synth) ->
+    input_loop(Synth, 
 	       fun(_Handle,Event) ->
 		       io:format("~p\n", [Event])
-	       end).
-
-input_prog(DeviceName, CallBack) ->
-    case open(DeviceName,[event,list,running]) of
+	       end,
+	       midi_codec:init());	    
+io_prog(DeviceName) when is_list(DeviceName) ->
+    case open_device(DeviceName) of
 	{ok,Handle} ->
-	    input_loop(Handle, CallBack, midi_codec:init());
+	    input_loop(Handle, 
+		       fun(_Handle,Event) ->
+			       io:format("~p\n", [Event])
+		       end,
+		       midi_codec:init());
 	Error ->
 	    Error
     end.
 
 input_loop(Handle, CallBack, State) ->
     case read(Handle) of
-	{ok,Chars} when is_list(Chars) ->
-	    case midi_codec:scan(Chars, State) of
-		{more, State1} ->
-		    input_loop(Handle, CallBack, State1);
-		{{Status,Params},State1} ->
-		    Event = midi_codec:event(Status, Params),
-		    CallBack(Handle, Event),
-		    input_loop(Handle, CallBack, State1)
-	    end;
+	{ok,Chars} when is_binary(Chars); is_list(Chars) ->
+	    dump_bin(iolist_to_binary(Chars)),
+	    codec_loop(Handle, Chars, CallBack, State);
 	{ok,_N} when is_integer(_N) -> %% got N events
+	    %% io:format("events ~p\n", [_N]),
 	    message_loop(Handle, CallBack, State);
 	{error,eagain} ->
+	    %% io:format("error eagain\n"),
 	    ok = select_(Handle, read),
 	    receive
 		{select,Handle,undefined,ready_input} ->
 		    input_loop(Handle,CallBack,State)
-	    end;	    
+	    end;
 	Error ->
 	    Error
+    end.
+
+codec_loop(Handle, Chars, CallBack, State) ->
+    case midi_codec:scan(Chars, State) of
+	{more, State1} ->  %% more data needed (not in status)
+	    input_loop(Handle, CallBack, State1);
+	{eot, State1} -> %% no more input needed
+	    input_loop(Handle, CallBack, State1);
+	{{Status,Params},State1} ->
+	    Event = midi_codec:event_decode(Status, Params),
+	    CallBack(Handle, Event),
+	    codec_loop(Handle, <<>>, CallBack, State1)
     end.
 
 message_loop(Handle, CallBack, State) ->
     receive
 	{midi,Handle,Event} -> %% driver handle packet
-	    io:format("midi event ~p\n", [Event]),
+	    %% io:format("midi event ~p\n", [Event]),
 	    CallBack(Handle, Event),
 	    message_loop(Handle, CallBack, State);
 	{midi,Handle,Event,_Delta} -> %% driver handle packet
-	    io:format("midi event ~p\n", [Event]),
+	    %% io:format("midi event ~p\n", [Event]),
 	    CallBack(Handle, Event),
 	    message_loop(Handle, CallBack, State)
     after 0 ->
 	    input_loop(Handle, CallBack, State)
     end.
+
+dump_bin(<<C,Cs/binary>>) ->
+    io:put_chars([$>,$\s,tl(integer_to_list(16#100+C, 2)),$\n]),
+    dump_bin(Cs);
+dump_bin(<<>>) ->
+    ok.
+
 
 synth() ->
     application:get_env(midi, midi_synth, ?DEFAULT_MIDI_SYNTH).
@@ -540,15 +603,18 @@ find_input_port(Port,[D=#{output:=OUT}|Ds]) ->
 find_input_port(_Port,[]) ->
     false.
 
-device_inquiry(Synth) ->
-    device_inquiry(Synth, 16#7f).
-device_inquiry(Synth, DID) ->
-    request_device_inquiry(Synth, DID),
-    case read_sys(Synth) of
+device_inquiry(DeviceName) when is_list(DeviceName) ->
+    with_device(DeviceName, fun device_inquiry/1);
+device_inquiry(Handle) ->
+    device_inquiry(Handle, 16#7f).
+device_inquiry(Handle, DID) when ?is_handle(Handle) ->
+    flush(Handle),
+    request_device_inquiry(Handle, DID),
+    case read_sys(Handle) of
 	{ok, <<0:1, ?SYSEX_NON_REALTIME:7, %% non-realtime message
 	       0:1, DeviceID:7,   %% 1 bytes!
 	       0:1, ?SYSEX_DEVICE_INQUIRY:7,
-	       0:1, ?DEVICE_INQUIRY_REPLY,
+	       0:1, ?DEVICE_INQUIRY_REPLY:7,
 	       0:1, 00:7,    %% Manufacturers id code (0001-7F7F)
 	       0:1, MH:7,
 	       0:1, ML:7,	
@@ -558,12 +624,14 @@ device_inquiry(Synth, DID) ->
 	       0:1, MemberMs:7, %% Product (0)
 	       Vsn/binary       %% Version (vary 3-4 bytes!!!)
 	     >>} ->
-	    Manufacturer = (MH bsl 7) bor ML,
+	    ManufID = <<16#00,MH,ML>>,
 	    Version = list_to_tuple(binary_to_list(Vsn)),
 	    Family = (FamilyMs bsl 7) bor FamilyLs,	    
 	    Member = (MemberMs bsl 7) bor MemberLs,
+	    ManufName = midi_manufacturer:lookup(ManufID),
 	    {ok, #{id=>DeviceID,
-		   manufacturer => Manufacturer,
+		   manufacturer => ManufID,
+		   manufacturer_name => ManufName,
 		   family=>Family, 
 		   member=>Member, 
 		   version=>Version }};
@@ -578,65 +646,148 @@ device_inquiry(Synth, DID) ->
 	       0:1, MemberMs:7, %% Product (0)
 	       Vsn/binary       %% Version (vary 3-4 bytes!!!)
 	     >>} ->
+	    ManufID = <<MM>>,
 	    Version = list_to_tuple(binary_to_list(Vsn)),
 	    Family = (FamilyMs bsl 7) bor FamilyLs,	    
 	    Member = (MemberMs bsl 7) bor MemberLs,
+	    ManufName = midi_manufacturer:lookup(ManufID),
 	    {ok, #{id=>ID,
-		   manufacturer => MM,
+		   manufacturer => ManufID,
+		   manufacturer_name => ManufName,
 		   family=>Family, member=>Member, version=>Version }};
 	Error ->	    
 	    Error
 	end.
 
 %% sysex messages
-request_device_inquiry(Synth) ->
-    request_device_inquiry(Synth,all).
-request_device_inquiry(Synth, all) ->
-    request_device_inquiry_(Synth, 16#7f);
-request_device_inquiry(Synth, ID) when
-      is_integer(ID), ID >= 1, ID =< 16#7f ->
-    request_device_inquiry_(Synth, ID-1).
+request_device_inquiry(Handle) ->
+    request_device_inquiry(Handle,all).
+request_device_inquiry(Handle, all) ->
+    request_device_inquiry_(Handle, 16#7f);
+request_device_inquiry(Handle, ID) when
+      ?is_handle(Handle), is_integer(ID), ID >= 1, ID =< 16#7f ->
+    request_device_inquiry_(Handle, ID-1).
 
-request_device_inquiry_(Synth, DeviceID) ->
-    midi:write(Synth, <<?MIDI_EVENT_SYS:4, 0:4,
-			0:1, ?SYSEX_NON_REALTIME:7,    %% non-realtime
-			0:1, DeviceID:7, %% +1 = 1-127
-			0:1, ?SYSEX_DEVICE_INQUIRY:7,
-			0:1, ?DEVICE_INQUIRY_REQUEST:7,
-			?MIDI_EVENT_SYS:4, 7:4>>).
+request_device_inquiry_(Handle, DeviceID) ->
+    write(Handle, <<?MIDI_EVENT_SYS:4, 0:4,
+		    0:1, ?SYSEX_NON_REALTIME:7,    %% non-realtime
+		    0:1, DeviceID:7, %% +1 = 1-127
+		    0:1, ?SYSEX_DEVICE_INQUIRY:7,
+		    0:1, ?DEVICE_INQUIRY_REQUEST:7,
+		    ?MIDI_EVENT_SYS:4, 7:4>>).
 
 %% read sys messages, drop other events (fixme?)
-read_sys(Synth) ->
-    read_sys(Synth, 3).
+read_sys(Handle) when ?is_handle(Handle) ->
+    read_sys_(Handle, 4, 3000).
+read_sys(Handle, Timeout) when ?is_handle(Handle) ->
+    read_sys_(Handle, 3, Timeout).
 
-read_sys(_Synth, 0) ->
+read_sys_(_Handle, 0, _Timeout) ->
     {error, not_found};
-read_sys(Synth, I) ->
-    case midi:read(Synth) of
+read_sys_(Handle, I, Timeout) ->
+    ?dbg("read_sys_ i=~w, timeout=~w\n", [I, Timeout]),
+    case read(Handle) of
 	{error,eagain} ->
-	    midi:select_(Synth, read),
+	    ?dbg("read_sys_ eagain\n"),
+	    ok = select_(Handle, read),
 	    receive
-		{select,Synth,undefined,ready_input} ->
-		    read_sys(Synth, I)
-	    after 3000 ->
-		    {error, timeout}
+		{select,Handle,undefined,ready_input} ->
+		    read_sys_(Handle, I, Timeout)
+	    after Timeout ->
+		    select_(Handle, cancel_read),
+		    receive
+			{select,Handle,undefined,ready_input} ->
+			    read_sys_(Handle, I, Timeout)
+		    after 0 -> %% wait for cancel_read
+			    {error, timeout}
+		    end
 	    end;
-	{ok,N} when is_integer(N) -> %% got N events
-	    read_sys_(Synth, I);
+	{ok, 0} ->
+	    ?dbg("read_sys_ got 0 events (retry)\n", []),
+	    read_sys_(Handle, I-1, Timeout);
+	{ok,_N} when is_integer(_N) -> %% got N events
+	    ?dbg("read_sys_ got ~w events\n", [_N]),
+	    case recv_sys(Handle, 0) of
+		{error, timeout} ->
+		    read_sys_(Handle, I-1, Timeout);
+		Other ->
+		    Other
+	    end;
 	Error->
 	    Error
     end.
 
-read_sys_(Synth,I) ->
+%% first scan for sys message in the queue
+%% then try to read more events
+recv_sys(Handle) when ?is_handle(Handle) ->
+    case recv_sys(Handle, 10) of
+	{error, timeout} ->
+	    read_sys(Handle);
+	Other ->
+	    Other
+    end.
+
+recv_sys(Handle,Timeout) ->
+    ?dbg("recv_sys_: timeout=~w\n", [Timeout]),
     receive
-	{midi,Synth,{sys,_N,<<>>}} ->
-	    read_sys_(Synth,I);
-	{midi,Synth,{sys,_N,Data}} ->
-	    {ok,Data};
-	{midi,Synth,Event} ->
-	    io:format("event ~p\n", [Event]),
-	    read_sys_(Synth,I)
+	{midi,Handle,{sys,_N,<<>>}} -> %% skip (buggy?) empty sys message
+	    recv_sys(Handle,Timeout);
+	{midi,Handle,{sys,_N,Data}} ->
+	    {ok,Data}
+	%% {midi,Handle,_Event} ->
+	%%   ?dbg("flush event ~p\n", [_Event]),
+	%%   recv_sys_(Handle,I,Timeout)
     after %% must wait and context switch!
-	100 ->
-	    read_sys(Synth,I-1)
+	Timeout ->
+	    {error, timeout}
+    end.
+
+flush(Handle) when ?is_handle(Handle) ->
+    ?dbg("flush: begin\n", []),
+    R = flush_(Handle, 0),
+    ?dbg("flush: end ~p\n", [R]),
+    R.
+
+flush_(Handle, I) ->
+    I1 = flush_events_(Handle, I),
+    case read(Handle) of
+	{error,eagain} ->
+	    ?dbg("flush: eagain\n", []),
+	    ok = select_(Handle, read),
+	    ?dbg("flush: select read\n", []),
+	    receive
+		{select,Handle,undefined,ready_input} ->
+		    flush_(Handle, I1)
+	    after 100 ->
+		    ?dbg("flush: cancel_read\n", []),
+		    select_(Handle, cancel_read),
+		    flush_select(Handle),
+		    I1
+	    end;
+	{ok,0} ->
+	    I1;
+	{ok,N} when is_integer(N) -> %% got N events
+	    ?dbg("flush detected ~w events\n", [N]),
+	    flush_(Handle, I);
+	Error->
+	    Error
+    end.
+
+flush_events_(Handle, I) ->
+    receive
+	{midi,Handle,_Event} ->
+	    ?dbg("flushed event ~p\n", [_Event]),
+	    flush_events_(Handle, I+1)
+    after 0 ->
+	    ?dbg("flushed ~w events\n", [I]),
+	    I
+    end.
+
+flush_select(Handle) ->
+    receive
+	{select,Handle,_Info,_Mesg} ->
+	    ?dbg("flush_ready_input:  ~p ~p\n", [_Info, _Mesg]),
+	    ok
+    after 0 ->
+	    ok
     end.

@@ -20,6 +20,17 @@
 
 -include("../include/midi.hrl").
 
+-define(DEBUG, true).
+
+-ifdef(DEBUG).
+-define(dbg(F), io:format((F))).
+-define(dbg(F, A), io:format((F), A)).
+-else.
+-define(dbg(F), ok).
+-define(dbg(F, A), ok).
+-endif.
+
+
 -record(s, 
 	{
 	 state = status :: status | params | params_eox | 
@@ -38,8 +49,8 @@ decode(Data) ->
     decode(init(), Data).
 
 %% continue decode after more is detected with more data
-decode(S=#s{buf=Buf}, Data1) ->
-    Buf1 = <<Buf/binary,Data1/binary>>,
+decode(S=#s{buf=Buf}, Data) ->
+    Buf1 = <<Buf/binary,(iolist_to_binary(Data))/binary>>,
     decode_(S#s{buf=Buf1}, []).
 
 decode_(S,Acc) ->
@@ -73,17 +84,19 @@ scan(St=#s{buf=(<<>>)}) ->
 scan(S=#s{state=State,buf=Data}) ->
     parse(State,Data,S).
 
-%% continue
-scan(Bin, S=#s{state=State,buf=Buf}) ->
-    parse(State, <<Buf/binary,Bin/binary>>, S).
+%% continue - add chars to input buffer and continue scan
+scan(Chars, S=#s{buf=Buf}) ->
+    Buf1 = <<Buf/binary,(iolist_to_binary(Chars))/binary>>,
+    scan(S#s{buf=Buf1}).
 
 parse(data, Data, S=#s{len=0}) ->
     Event = {S#s.status, lists:reverse(S#s.params)},
     {Event, S#s{state=status,buf=Data,status=0,params=[]}};
 parse(data, <<B,Data/binary>>, S=#s{len=Len}) ->
     parse(data, Data, S#s { len=Len-1, params=[B|S#s.params] });
+
 parse(Status, Data=(<<B,Data1/binary>>), S) ->
-    %%io:format("parse ~s: ~p [s=~p]\n",[Status,Data,S]),
+    ?dbg("parse ~w: ~w [s=~1000p]\n",[Status,Data,S]),
     if B >= 16#f8, B =< 16#ff -> %% real time (fixme: check file scan)
 	    if B =:= 16#ff, S#s.midi_file =:= true ->
 		    parse(meta,Data1,S#s{len=0,status=B});
@@ -93,8 +106,11 @@ parse(Status, Data=(<<B,Data1/binary>>), S) ->
 	    end;
        true ->
 	    parse_(Status, Data, S)
-    end.
-%% more eot?
+    end;
+parse(status, <<>>, S) ->
+    {eot, S#s{state=status}};
+parse(Status, <<>>, S) ->
+    {more, S#s{state=Status}}.
 
 parse_(status, Data=(<<B,Data1/binary>>), S) ->
     if B band 16#80 =:= 0 ->
@@ -108,12 +124,15 @@ parse_(status, Data=(<<B,Data1/binary>>), S) ->
        true ->
 	    parse_status_(B, Data1, S#s{running=B, status=B})
     end;
-parse_(params, Data=(<<B,Data1/binary>>), S) ->
-    case S#s.len of
-	0 -> event(Data, S);
-	N ->
-	    Ps = S#s.params,
-	    parse(params, Data1, S#s { len=N-1, params = [B|Ps] })
+parse_(params, _Data=(<<B,Data1/binary>>), S) ->
+    ?dbg("parse(params) ~w [s=~1000p]\n",[_Data,S]),
+    Len = S#s.len,
+    Ps = S#s.params,
+    case Len - 1 of
+	0 ->
+	    event(Data1, S#s { len = 0, params = [B|Ps] });
+	Len1 ->
+	    parse(params, Data1, S#s { len=Len1, params=[B|Ps] })
     end;
 parse_(params_eox, Data=(<<B,Data1/binary>>), S) ->
     if B band 16#80 =/= 0 ->
@@ -148,6 +167,7 @@ parse_(vl,<<_,_,_,_,_Data/binary>>,S) ->
 
 %% Status = 2#1xxx_vvvv
 parse_status_(Status, Data, S) ->
+    ?dbg("parse_status_ ~w: ~w [s=~1000p]\n",[Status,Data,S]),
     case Status bsr 4 of
 	?MIDI_EVENT_NOTEOFF ->
 	    parse(params, Data, S#s { len=2, status=Status });
@@ -202,7 +222,11 @@ event(Data, S) ->
 
 real_time_event(Sys, S) ->
     Event = sys_decode(Sys, undefined),
-    (S#s.callback)(Event).
+    if is_function(S#s.callback) ->
+	    (S#s.callback)(Event);
+       true ->
+	    ?dbg("realtime event: ~p\n", [Event])
+    end.
 
 
 scan_delta(S=#s{state=status,buf=(<<>>)}) ->
@@ -368,7 +392,8 @@ meta_encode(Meta, Params, Run, Acc) ->
 		  Acc).
 
 sys_event_encode(Sys, Params, Run, Acc) ->
-    Bin = << <<0:1,P:7>> || P <- Params >>,
+    Params1 = if Params =:= undefined -> []; true -> Params end,
+    Bin = << <<0:1,P:7>> || P <- Params1 >>,
     event_encode_(<<?MIDI_EVENT_SYS:4,Sys:4>>,
 		  Run,
 		  Bin,
@@ -417,7 +442,7 @@ event_decode(Status,Params=[B,C]) ->
 	    #pitch_bend{chan=Status band 16#0F, 
 			bend=((C bsl 7) bor B) - 16#2000};
 	?MIDI_EVENT_SYS ->
-	    sys_decode(Status band 16#0F, Params)
+	    sys_decode(Status, Params)
     end;
 event_decode(Status,Params=[B]) ->
     case Status bsr 4 of
@@ -426,16 +451,16 @@ event_decode(Status,Params=[B]) ->
 	?MIDI_EVENT_PRESSURE ->
 	    #pressure{chan=Status band 16#0F, pressure=B};
 	?MIDI_EVENT_SYS ->
-	    sys_decode(Status band 16#0F, Params)
+	    sys_decode(Status, Params)
     end;
 event_decode(Status,Params) ->
     case Status bsr 4 of
 	?MIDI_EVENT_SYS ->
-	    sys_decode(Status band 16#0F, Params)
+	    sys_decode(Status, Params)
     end.
 
 sys_decode(Sys, Params) ->
-    case Sys of
+    case Sys band 16#0f of
 	%% non-real time (ex have some real time as well...)
 	0 -> #sys{type=ex,params=Params};
 	1 -> #sys{type=sys1,params=Params};
